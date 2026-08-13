@@ -2,39 +2,51 @@
 // @ai-rules:
 // 1. [Pattern]: Minimal WS server for streaming CLI output to VS Code extension.
 // 2. [Constraint]: Bind localhost only — never expose to network.
-// 3. [Constraint]: Port conflict = noop broadcast + stderr warning (non-fatal).
+// 3. [Constraint]: Port conflict = retry up to 5 times, then noop broadcast (non-fatal).
 // 4. [Gotcha]: broadcast() must tolerate zero connected clients silently.
 // 5. [Security]: verifyClient rejects connections with an Origin header (browser requests).
-//    Only the VS Code extension host (Node.js WS client, no Origin) should connect.
+// 6. [Pattern]: HTTP server created separately so its 'error' event is reliably caught
+//    (WebSocketServer's internal server error forwarding is unreliable).
 
+import { createServer } from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
 
 const DEFAULT_PORT = 3456;
+const RETRY_MS = 2000;
 
 let _wss = null;
+let _httpServer = null;
 
 export function startWSBridge() {
   const port = parseInt(process.env.WS_BRIDGE_PORT, 10) || DEFAULT_PORT;
+  const parsed = parseInt(process.env.WS_BRIDGE_MAX_RETRIES, 10);
+  const maxRetries = Number.isNaN(parsed) ? 5 : parsed;
+  let retries = 0;
 
-  _wss = new WebSocketServer({
-    host: '127.0.0.1',
-    port,
-    verifyClient: ({ req }) => {
-      if (req.headers.origin) return false;
-      return true;
-    },
-  });
+  function tryBind() {
+    const httpServer = createServer();
 
-  _wss.on('listening', () => {
-    process.stderr.write(`[ws-bridge] Listening on 127.0.0.1:${port}\n`);
-  });
+    httpServer.on('error', (err) => {
+      process.stderr.write(`[ws-bridge] ${err.code === 'EADDRINUSE' ? 'Port in use' : 'Error'}: ${err.message}\n`);
+      if (err.code === 'EADDRINUSE' && retries < maxRetries) {
+        retries++;
+        process.stderr.write(`[ws-bridge] Retry ${retries}/${maxRetries} in ${RETRY_MS}ms\n`);
+        setTimeout(tryBind, RETRY_MS);
+      }
+    });
 
-  _wss.on('error', (err) => {
-    process.stderr.write(`[ws-bridge] ${err.code === 'EADDRINUSE' ? 'Port in use' : 'Error'}: ${err.message}\n`);
-    _wss = null;
-  });
+    httpServer.listen(port, '127.0.0.1', () => {
+      const wss = new WebSocketServer({
+        server: httpServer,
+        verifyClient: ({ req }) => !req.headers.origin,
+      });
+      _wss = wss;
+      _httpServer = httpServer;
+      process.stderr.write(`[ws-bridge] Listening on 127.0.0.1:${port}\n`);
+    });
+  }
 
-  return { broadcast };
+  tryBind();
 }
 
 export function broadcast(data) {
@@ -48,8 +60,6 @@ export function broadcast(data) {
 }
 
 export function stopWSBridge() {
-  if (_wss) {
-    _wss.close();
-    _wss = null;
-  }
+  if (_wss) { _wss.close(); _wss = null; }
+  if (_httpServer) { _httpServer.close(); _httpServer = null; }
 }
