@@ -123,15 +123,13 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Claude CLI</title>
   <style nonce="${nonce}">
-    :root {
-      --gap: 8px;
-    }
+    :root { --gap: 4px; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: var(--vscode-font-family, monospace);
-      font-size: var(--vscode-font-size, 13px);
-      color: var(--vscode-foreground);
-      background: var(--vscode-editor-background);
+      font-family: var(--vscode-terminal-font-family, var(--vscode-editor-font-family, monospace));
+      font-size: var(--vscode-terminal-font-size, 13px);
+      color: var(--vscode-terminal-foreground, var(--vscode-foreground));
+      background: var(--vscode-terminal-background, var(--vscode-editor-background));
       padding: var(--gap);
       height: 100vh;
       display: flex;
@@ -140,17 +138,20 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     .header {
       display: flex;
       align-items: center;
-      gap: var(--gap);
-      padding-bottom: var(--gap);
-      border-bottom: 1px solid var(--vscode-panel-border, #444);
+      gap: 6px;
+      padding: 2px 4px 4px;
+      border-bottom: 1px solid var(--vscode-terminal-border, var(--vscode-panel-border, #333));
       flex-shrink: 0;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
     }
     .badge {
-      padding: 2px 8px;
-      border-radius: 10px;
-      font-size: 11px;
-      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 700;
       text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
     .badge.architect { background: #7c3aed; color: #fff; }
     .badge.planner  { background: #2563eb; color: #fff; }
@@ -159,44 +160,61 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     .badge.executor { background: #d97706; color: #fff; }
     .badge.default  { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
     .status-dot {
-      width: 8px; height: 8px;
+      width: 6px; height: 6px;
       border-radius: 50%;
-      background: var(--vscode-testing-iconUnset, #888);
+      background: var(--vscode-terminal-ansiRed, #888);
       flex-shrink: 0;
     }
-    .status-dot.connected { background: var(--vscode-testing-iconPassed, #4caf50); }
-    .status-dot.running   { background: var(--vscode-testing-iconQueued, #ff9800); animation: pulse 1s infinite; }
-    @keyframes pulse { 50% { opacity: 0.4; } }
-    .status-label {
-      font-size: 11px;
-      color: var(--vscode-descriptionForeground);
-    }
+    .status-dot.connected { background: var(--vscode-terminal-ansiGreen, #4caf50); }
+    .status-dot.running   { background: var(--vscode-terminal-ansiYellow, #ff9800); animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.3; } }
     .output {
       flex: 1;
       overflow-y: auto;
-      padding: var(--gap);
+      padding: 4px;
       white-space: pre-wrap;
       word-break: break-word;
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: var(--vscode-editor-font-size, 13px);
-      line-height: 1.5;
-      background: var(--vscode-editor-background);
+      font-family: inherit;
+      font-size: inherit;
+      line-height: 1.35;
     }
-    .output .tool-call {
-      color: var(--vscode-debugTokenExpression-name, #9cdcfe);
+    .output .line { display: flex; gap: 0; }
+    .output .ts {
+      color: var(--vscode-terminal-ansiBrightBlack, #666);
+      flex-shrink: 0;
+      user-select: none;
     }
-    .output .tool-call::before { content: "▸ "; }
-    .output .error-line {
-      color: var(--vscode-errorForeground, #f44747);
+    .output .text { flex: 1; }
+    .output .tool-call .text {
+      color: var(--vscode-terminal-ansiCyan, #9cdcfe);
     }
+    .output .error-line .text {
+      color: var(--vscode-terminal-ansiRed, #f44747);
+    }
+    .output .system-line .text {
+      color: var(--vscode-terminal-ansiBrightBlack, #666);
+      font-style: italic;
+    }
+    .output .cursor-blink {
+      display: inline-block;
+      width: 7px;
+      height: 1.1em;
+      background: var(--vscode-terminalCursor-foreground, var(--vscode-terminal-foreground, #ccc));
+      animation: blink 1s step-end infinite;
+      vertical-align: text-bottom;
+      margin-left: 2px;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
     .empty-state {
       display: flex;
       align-items: center;
       justify-content: center;
       flex: 1;
-      color: var(--vscode-descriptionForeground);
+      color: var(--vscode-terminal-ansiBrightBlack, var(--vscode-descriptionForeground));
       font-style: italic;
+      font-size: 12px;
     }
+    .empty-state::before { content: "$ "; opacity: 0.5; }
   </style>
 </head>
 <body>

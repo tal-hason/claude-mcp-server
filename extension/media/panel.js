@@ -4,6 +4,7 @@
 // 2. [Pattern]: Receives messages via window.addEventListener('message'). Renders streaming text.
 // 3. [Gotcha]: acquireVsCodeApi() can only be called once per webview lifecycle.
 // 4. [Pattern]: Auto-scroll follows bottom unless user scrolls up (sticky scroll).
+// 5. [Pattern]: Terminal aesthetic — timestamps, prompt prefixes, blinking cursor when running.
 
 (function () {
   const output = document.getElementById('output');
@@ -13,17 +14,19 @@
   const modeBadge = document.getElementById('modeBadge');
 
   let autoScroll = true;
-  let currentState = 'idle';
+  let cursorEl = null;
 
   output.addEventListener('scroll', () => {
-    const threshold = 40;
-    autoScroll = (output.scrollHeight - output.scrollTop - output.clientHeight) < threshold;
+    autoScroll = (output.scrollHeight - output.scrollTop - output.clientHeight) < 40;
   });
 
   function scrollToBottom() {
-    if (autoScroll) {
-      output.scrollTop = output.scrollHeight;
-    }
+    if (autoScroll) output.scrollTop = output.scrollHeight;
+  }
+
+  function ts() {
+    const d = new Date();
+    return d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0').slice(0, 1);
   }
 
   function clearOutput() {
@@ -31,43 +34,70 @@
       output.removeChild(output.lastChild);
     }
     if (emptyState) emptyState.style.display = '';
+    cursorEl = null;
   }
 
   function hideEmptyState() {
     if (emptyState) emptyState.style.display = 'none';
   }
 
-  function appendText(text, className) {
-    hideEmptyState();
-    const el = document.createElement('div');
-    if (className) el.className = className;
-    el.textContent = text;
-    output.appendChild(el);
+  function removeCursor() {
+    if (cursorEl) { cursorEl.remove(); cursorEl = null; }
+  }
+
+  function addCursor() {
+    removeCursor();
+    cursorEl = document.createElement('span');
+    cursorEl.className = 'cursor-blink';
+    output.appendChild(cursorEl);
     scrollToBottom();
   }
 
-  function setStatus(state) {
-    currentState = state;
-    statusDot.className = 'status-dot';
+  function appendLine(text, className) {
+    hideEmptyState();
+    removeCursor();
 
+    const line = document.createElement('div');
+    line.className = 'line' + (className ? ' ' + className : '');
+
+    const tsSpan = document.createElement('span');
+    tsSpan.className = 'ts';
+    tsSpan.textContent = ts() + ' ';
+    line.appendChild(tsSpan);
+
+    const textSpan = document.createElement('span');
+    textSpan.className = 'text';
+    textSpan.textContent = text;
+    line.appendChild(textSpan);
+
+    output.appendChild(line);
+    scrollToBottom();
+  }
+
+  function appendSystem(text) {
+    appendLine(text, 'system-line');
+  }
+
+  function setStatus(state) {
+    statusDot.className = 'status-dot';
     switch (state) {
       case 'connected':
         statusDot.classList.add('connected');
-        statusLabel.textContent = 'Connected';
+        statusLabel.textContent = 'connected';
         break;
       case 'running':
         statusDot.classList.add('running');
-        statusLabel.textContent = 'Running…';
+        statusLabel.textContent = 'running';
         break;
       case 'done':
         statusDot.classList.add('connected');
-        statusLabel.textContent = 'Done';
+        statusLabel.textContent = 'done';
         break;
       case 'disconnected':
-        statusLabel.textContent = 'Reconnecting…';
+        statusLabel.textContent = 'reconnecting';
         break;
       default:
-        statusLabel.textContent = 'Idle';
+        statusLabel.textContent = 'idle';
     }
   }
 
@@ -88,6 +118,7 @@
     switch (msg.type) {
       case 'ws-status':
         setStatus(msg.connected ? 'connected' : 'disconnected');
+        if (msg.connected) appendSystem('ws connected');
         break;
 
       case 'status':
@@ -95,24 +126,30 @@
           clearOutput();
           setStatus('running');
           setMode(msg.mode || null);
+          appendSystem(msg.mode ? `claude --mode ${msg.mode}` : 'claude');
+          addCursor();
         } else if (msg.state === 'done') {
+          removeCursor();
           setStatus('done');
-          appendText(`\n— exit ${msg.exitCode ?? '?'} —`, msg.exitCode === 0 ? '' : 'error-line');
+          const code = msg.exitCode ?? '?';
+          appendSystem(`exit ${code}` + (code === 0 ? '' : ' [FAILED]'));
         }
         break;
 
       case 'content':
         if (!msg.text) break;
+        removeCursor();
         const lines = msg.text.split('\n');
         for (const line of lines) {
           if (line.startsWith('[tool] ')) {
-            appendText(line, 'tool-call');
+            appendLine(line, 'tool-call');
           } else if (line.startsWith('[error]')) {
-            appendText(line, 'error-line');
+            appendLine(line, 'error-line');
           } else {
-            appendText(line);
+            appendLine(line);
           }
         }
+        addCursor();
         break;
     }
   });
