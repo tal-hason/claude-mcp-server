@@ -168,21 +168,22 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
 
     #container {
       flex: 1;
-      overflow-y: auto;
+      overflow: hidden;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 8px;
-      padding: 8px 4px;
-      align-content: start;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      grid-auto-rows: 1fr;
+      gap: 6px;
+      padding: 6px 4px;
     }
+    #container.single-card { grid-template-columns: 1fr; }
     .task-card {
-      border-radius: 8px;
+      border-radius: 6px;
       display: flex;
       flex-direction: column;
-      max-height: 350px;
       overflow: hidden;
       border-left: 3px solid #6b7280;
       transition: opacity 0.3s;
+      min-height: 0;
     }
     .task-card.mode-architect { border-left-color: #7c3aed; background: rgba(124,58,237,0.05); }
     .task-card.mode-planner  { border-left-color: #2563eb; background: rgba(37,99,235,0.05); }
@@ -229,6 +230,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     .task-status.failed { color: var(--vscode-terminal-ansiRed, #f44747); }
     .task-output {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 8px 12px;
       white-space: pre-wrap;

@@ -74,8 +74,8 @@
     card.appendChild(output);
 
     container.prepend(card);
-
     tasks.set(taskId, { card, output, statusSpan, autoScroll: true });
+    container.classList.toggle('single-card', tasks.size === 1);
 
     output.addEventListener('scroll', () => {
       const t = tasks.get(taskId);
