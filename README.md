@@ -2,24 +2,40 @@
 
 MCP server wrapping Claude CLI — lets Cursor (or any MCP host) use Claude as a sub-agent.
 
-## Setup
+## Install
+
+One command — no clone needed:
 
 ```bash
-npm install
+bash <(curl -fsSL https://raw.githubusercontent.com/tal-hason/claude-mcp-server/main/install.sh)
 ```
 
-Add to `~/.cursor/mcp.json`:
+This downloads the latest pre-built release, installs the Cursor extension, and registers the MCP server.
 
-```json
-{
-  "mcpServers": {
-    "claude-cli": {
-      "command": "node",
-      "args": ["/path/to/claude-mcp-server/server.js"],
-      "description": "Claude CLI bridge — use Claude as a sub-agent via MCP"
-    }
-  }
-}
+**Prerequisites:** Node.js >= 20, jq, curl, [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli)
+
+### Install from source
+
+```bash
+git clone https://github.com/tal-hason/claude-mcp-server.git
+cd claude-mcp-server
+./setup.sh
+```
+
+Requires npm in addition to the prerequisites above.
+
+### Custom install location
+
+```bash
+CLAUDE_MCP_DIR=~/my-tools/claude-mcp bash <(curl -fsSL https://raw.githubusercontent.com/tal-hason/claude-mcp-server/main/install.sh)
+```
+
+### Uninstall
+
+```bash
+rm -rf ~/.local/share/claude-mcp-server
+jq 'del(.mcpServers["claude-cli"])' ~/.cursor/mcp.json > /tmp/mcp.json && mv /tmp/mcp.json ~/.cursor/mcp.json
+cursor --uninstall-extension thason.claude-cli-panel
 ```
 
 ## Usage

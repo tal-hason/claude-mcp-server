@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install server dependencies
+        run: npm ci --no-fund --no-audit
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build extension
+        working-directory: extension
+        run: |
+          npm ci --no-fund --no-audit
+          npx tsc -p tsconfig.json
+          npx @vscode/vsce package --no-dependencies -o claude-cli-panel.vsix
+
+      - name: Create release bundle
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BUNDLE_DIR="claude-mcp-server-${VERSION}"
+          mkdir -p "$BUNDLE_DIR"
+
+          cp server.js cli-executor.js stream-parser.js modes.js ws-bridge.js \
+             package.json package-lock.json setup.sh "$BUNDLE_DIR/"
+
+          cp -r node_modules "$BUNDLE_DIR/node_modules"
+
+          mkdir -p "$BUNDLE_DIR/extension"
+          cp extension/claude-cli-panel.vsix "$BUNDLE_DIR/extension/"
+
+          tar czf "claude-mcp-server-${VERSION}.tar.gz" "$BUNDLE_DIR"
+
+          echo "BUNDLE_NAME=claude-mcp-server-${VERSION}.tar.gz" >> "$GITHUB_ENV"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: ${{ env.BUNDLE_NAME }}
+          body: |
+            ## Install
+
+            ```bash
+            bash <(curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh)
+            ```
+
+            Or download `${{ env.BUNDLE_NAME }}`, extract, and run `./setup.sh`.
+
+            **Prerequisites:** Node.js >= 20, [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli)

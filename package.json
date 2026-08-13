@@ -8,7 +8,7 @@
     "start": "node server.js",
     "test": "node --test test/*.test.js",
     "test:parser": "node --test test/stream-parser.test.js",
-    "postinstall": "[ -f extension/claude-cli-panel-*.vsix ] && cursor --install-extension extension/claude-cli-panel-*.vsix 2>/dev/null || true"
+    "setup": "bash setup.sh"
   },
   "engines": {
     "node": ">=20.0.0"
