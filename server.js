@@ -15,7 +15,11 @@ import { executeClaude, killActive } from './cli-executor.js';
 import { MODES, MODE_NAMES } from './modes.js';
 import { startWSBridge, broadcast, stopWSBridge } from './ws-bridge.js';
 
-startWSBridge();
+setTimeout(() => {
+  try { startWSBridge(); } catch (err) {
+    process.stderr.write(`[ws-bridge] init failed: ${err.message}\n`);
+  }
+}, 100);
 
 process.on('SIGTERM', () => { killActive(); stopWSBridge(); process.exit(0); });
 process.on('SIGINT', () => { killActive(); stopWSBridge(); process.exit(0); });
