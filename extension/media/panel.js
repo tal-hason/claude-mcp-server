@@ -121,36 +121,38 @@
         if (msg.connected) appendSystem('ws connected');
         break;
 
-      case 'status':
+      case 'status': {
+        const tag = msg.taskId ? `[${msg.taskId}] ` : '';
         if (msg.state === 'running') {
-          clearOutput();
           setStatus('running');
           setMode(msg.mode || null);
-          appendSystem(msg.mode ? `claude --mode ${msg.mode}` : 'claude');
+          appendSystem(`${tag}claude` + (msg.mode ? ` --mode ${msg.mode}` : ''));
           addCursor();
         } else if (msg.state === 'done') {
-          removeCursor();
-          setStatus('done');
           const code = msg.exitCode ?? '?';
-          appendSystem(`exit ${code}` + (code === 0 ? '' : ' [FAILED]'));
+          appendSystem(`${tag}exit ${code}` + (code === 0 ? '' : ' [FAILED]'));
+          if (_children === 0) { removeCursor(); setStatus('done'); }
         }
         break;
+      }
 
-      case 'content':
+      case 'content': {
         if (!msg.text) break;
         removeCursor();
+        const tag = msg.taskId ? `[${msg.taskId}] ` : '';
         const lines = msg.text.split('\n');
         for (const line of lines) {
           if (line.startsWith('[tool] ')) {
-            appendLine(line, 'tool-call');
+            appendLine(tag + line, 'tool-call');
           } else if (line.startsWith('[error]')) {
-            appendLine(line, 'error-line');
+            appendLine(tag + line, 'error-line');
           } else {
-            appendLine(line);
+            appendLine(tag + line);
           }
         }
         addCursor();
         break;
+      }
     }
   });
 

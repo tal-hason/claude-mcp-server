@@ -2,23 +2,22 @@
 // @ai-rules:
 // 1. [Pattern]: Spawns claude CLI with --print --output-format stream-json. Returns { output, sessionId }.
 // 2. [Pattern]: onProgress callback receives parsed stream lines for MCP progress notifications (debounced).
-// 3. [Pattern]: Concurrency guard — one CLI process at a time via _active flag. Rejects concurrent calls.
-// 4. [Pattern]: SIGKILL escalation — if SIGTERM doesn't kill the process within 5s, escalate to SIGKILL.
-// 5. [Pattern]: systemPrompt (--system-prompt) and appendSystemPrompt (--append-system-prompt) are
-//    independent. Both pass through simultaneously. Neither affects ~/.claude/CLAUDE.md discovery.
-// 6. [Pattern]: Result-event text stored as fallback — if stream was interrupted and textAccum is empty,
-//    the result event's text is used instead of returning '(no output)'.
-// 7. [Pattern]: onBroadcast callback for WS bridge — NOT debounced (full fidelity for extension panel).
-//    Receives every parsed line + status messages ({ type: 'status', state: 'running'|'done' }).
+// 3. [Pattern]: Concurrent pool — up to MAX_CONCURRENT CLI processes tracked by taskId in _children Map.
+// 4. [Pattern]: SIGKILL escalation — if SIGTERM doesn't kill within 5s, escalate to SIGKILL.
+// 5. [Pattern]: systemPrompt and appendSystemPrompt are independent. Neither affects ~/.claude/CLAUDE.md.
+// 6. [Pattern]: Result-event text stored as fallback for interrupted streams.
+// 7. [Pattern]: onBroadcast callback for WS bridge — NOT debounced. Tagged with taskId for panel routing.
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { parseStreamLine } from './stream-parser.js';
 
 const DEFAULT_TIMEOUT_MS = 300_000; // 5 min
 const PROGRESS_DEBOUNCE_MS = 500;
 const SIGKILL_DELAY_MS = 5_000;
+const MAX_CONCURRENT = 5;
 
-let _activeChild = null;
+const _children = new Map();
 
 function killWithEscalation(child) {
   child.kill('SIGTERM');
@@ -30,29 +29,33 @@ function killWithEscalation(child) {
 
 /**
  * Execute Claude CLI and stream progress via callback.
+ * Supports up to MAX_CONCURRENT parallel executions.
+ * Each call is assigned a unique taskId for WS broadcast tagging.
  *
  * @param {object} opts
  * @param {string} opts.prompt
- * @param {string} [opts.model]              - Exact model name (e.g. 'claude-sonnet-5')
- * @param {string} [opts.effort]             - Effort level (low|medium|high|xhigh|max)
- * @param {string} [opts.systemPrompt]       - System prompt override (--system-prompt)
- * @param {string} [opts.appendSystemPrompt] - Additive system prompt (--append-system-prompt)
- * @param {string} [opts.sessionId]          - Resume session via --resume
- * @param {string} [opts.cwd]               - Working directory
- * @param {number} [opts.timeoutMs]          - Process timeout
- * @param {(msg: string) => void} [opts.onProgress] - Stream callback (debounced at 500ms)
- * @param {(data: object) => void} [opts.onBroadcast] - WS bridge callback (full fidelity, no debounce)
- * @returns {Promise<{ output: string, sessionId: string|null, exitCode: number }>}
+ * @param {string} [opts.model]
+ * @param {string} [opts.effort]
+ * @param {string} [opts.systemPrompt]
+ * @param {string} [opts.appendSystemPrompt]
+ * @param {string} [opts.sessionId]
+ * @param {string} [opts.cwd]
+ * @param {number} [opts.timeoutMs]
+ * @param {(msg: string) => void} [opts.onProgress]
+ * @param {(data: object) => void} [opts.onBroadcast]
+ * @returns {Promise<{ output: string, sessionId: string|null, exitCode: number, taskId: string }>}
  */
 export function executeClaude(opts) {
-  if (_activeChild) {
-    return Promise.reject(new Error('Claude CLI is already running. One process at a time.'));
+  if (_children.size >= MAX_CONCURRENT) {
+    return Promise.reject(new Error(`Concurrent limit reached (${MAX_CONCURRENT}). Wait for a running task to finish.`));
   }
 
   const {
     prompt, model, effort, systemPrompt, appendSystemPrompt,
     sessionId, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, onProgress, onBroadcast,
   } = opts;
+
+  const taskId = randomUUID().slice(0, 8);
 
   return new Promise((resolve, reject) => {
     const args = [
@@ -75,8 +78,8 @@ export function executeClaude(opts) {
       env: process.env,
     });
 
-    _activeChild = child;
-    if (onBroadcast) onBroadcast({ type: 'status', state: 'running' });
+    _children.set(taskId, child);
+    if (onBroadcast) onBroadcast({ type: 'status', state: 'running', taskId });
 
     let lineBuffer = '';
     let textAccum = '';
@@ -98,7 +101,7 @@ export function executeClaude(opts) {
           resultFallback = parsed.text;
         }
         if (onBroadcast && parsed.text && !parsed.done) {
-          onBroadcast({ type: 'content', text: parsed.text });
+          onBroadcast({ type: 'content', text: parsed.text, taskId });
         }
         if (parsed.text && !parsed.done) {
           textAccum += parsed.text + '\n';
@@ -117,7 +120,7 @@ export function executeClaude(opts) {
     child.stderr.on('data', (data) => { stderr += data.toString(); });
 
     child.on('close', (code) => {
-      _activeChild = null;
+      _children.delete(taskId);
 
       if (lineBuffer.trim()) {
         const parsed = parseStreamLine(lineBuffer);
@@ -129,24 +132,31 @@ export function executeClaude(opts) {
         if (parsed?.sessionId) capturedSessionId = parsed.sessionId;
       }
 
-      if (onBroadcast) onBroadcast({ type: 'status', state: 'done', exitCode: code ?? 1 });
+      if (onBroadcast) onBroadcast({ type: 'status', state: 'done', exitCode: code ?? 1, taskId });
 
       const output = textAccum.trim()
         || resultFallback?.trim()
         || stderr.trim()
         || '(no output)';
 
-      resolve({ output, sessionId: capturedSessionId, exitCode: code ?? 1 });
+      resolve({ output, sessionId: capturedSessionId, exitCode: code ?? 1, taskId });
     });
 
     child.on('error', (err) => {
-      _activeChild = null;
+      _children.delete(taskId);
       reject(new Error(`Failed to spawn claude: ${err.message}`));
     });
   });
 }
 
-/** Kill the active child process if any (for cleanup on server shutdown). */
+/** Kill all active child processes (for cleanup on server shutdown). */
 export function killActive() {
-  if (_activeChild) killWithEscalation(_activeChild);
+  for (const child of _children.values()) {
+    killWithEscalation(child);
+  }
+}
+
+/** Number of currently running CLI processes. */
+export function activeCount() {
+  return _children.size;
 }
