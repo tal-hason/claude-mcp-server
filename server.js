@@ -6,21 +6,21 @@
 // 4. [Constraint]: Import only from @modelcontextprotocol/server, zod/v4, and local modules.
 // 5. [Constraint]: All stderr logging — stdout is the MCP JSON-RPC transport.
 // 6. [Pattern]: SIGTERM/SIGINT → killActive() + stopWSBridge() ensures clean shutdown.
-// 7. [Pattern]: WS bridge starts inside serveStdio factory. broadcast() wired as onBroadcast to CLI executor.
+// 7. [Pattern]: WS bridge starts at module level (before serveStdio) so it's ready before first tool call.
 
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod/v4';
 import { executeClaude, killActive } from './cli-executor.js';
 import { MODES, MODE_NAMES } from './modes.js';
-import { startWSBridge, stopWSBridge } from './ws-bridge.js';
+import { startWSBridge, broadcast, stopWSBridge } from './ws-bridge.js';
+
+startWSBridge();
 
 process.on('SIGTERM', () => { killActive(); stopWSBridge(); process.exit(0); });
 process.on('SIGINT', () => { killActive(); stopWSBridge(); process.exit(0); });
 
 serveStdio(() => {
-  const { broadcast } = startWSBridge();
-
   const server = new McpServer(
     { name: 'claude-cli', version: '0.2.0' },
     { capabilities: { tools: {} } },
