@@ -123,35 +123,69 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Claude CLI</title>
   <style nonce="${nonce}">
-    :root { --gap: 4px; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: var(--vscode-terminal-font-family, var(--vscode-editor-font-family, monospace));
       font-size: var(--vscode-terminal-font-size, 13px);
       color: var(--vscode-terminal-foreground, var(--vscode-foreground));
       background: var(--vscode-terminal-background, var(--vscode-editor-background));
-      padding: var(--gap);
+      padding: 4px;
       height: 100vh;
       display: flex;
       flex-direction: column;
     }
-    .header {
+    .global-header {
       display: flex;
       align-items: center;
       gap: 6px;
       padding: 2px 4px 4px;
-      border-bottom: 1px solid var(--vscode-terminal-border, var(--vscode-panel-border, #333));
+      border-bottom: 1px solid var(--vscode-panel-border, #333);
       flex-shrink: 0;
       font-size: 11px;
       color: var(--vscode-descriptionForeground);
     }
+    .status-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--vscode-terminal-ansiRed, #888); flex-shrink: 0;
+    }
+    .status-dot.connected { background: var(--vscode-terminal-ansiGreen, #4caf50); }
+    .status-dot.running { background: var(--vscode-terminal-ansiYellow, #ff9800); animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.3; } }
+
+    #container {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 4px 0;
+      align-content: flex-start;
+    }
+    .task-card {
+      border: 1px solid var(--vscode-panel-border, #333);
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      min-width: 280px;
+      max-width: 100%;
+      flex: 1 1 calc(50% - 4px);
+      max-height: 300px;
+      overflow: hidden;
+    }
+    .task-card.completed { opacity: 0.7; }
+    .task-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      border-bottom: 1px solid var(--vscode-panel-border, #333);
+      flex-shrink: 0;
+      font-size: 11px;
+    }
     .badge {
-      padding: 1px 6px;
-      border-radius: 3px;
-      font-size: 10px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      padding: 1px 6px; border-radius: 3px;
+      font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.5px;
     }
     .badge.architect { background: #7c3aed; color: #fff; }
     .badge.planner  { background: #2563eb; color: #fff; }
@@ -159,72 +193,48 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     .badge.explorer { background: #059669; color: #fff; }
     .badge.executor { background: #d97706; color: #fff; }
     .badge.default  { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-    .status-dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      background: var(--vscode-terminal-ansiRed, #888);
-      flex-shrink: 0;
+    .task-id {
+      color: var(--vscode-terminal-ansiBrightBlack, #888);
+      font-size: 10px;
     }
-    .status-dot.connected { background: var(--vscode-terminal-ansiGreen, #4caf50); }
-    .status-dot.running   { background: var(--vscode-terminal-ansiYellow, #ff9800); animation: pulse 1s infinite; }
-    @keyframes pulse { 50% { opacity: 0.3; } }
-    .output {
+    .task-time {
+      color: var(--vscode-terminal-ansiBrightBlack, #888);
+      font-size: 10px;
+      margin-left: auto;
+    }
+    .task-status {
+      font-size: 10px; font-weight: 600;
+    }
+    .task-status.running { color: var(--vscode-terminal-ansiYellow, #ff9800); }
+    .task-status.done { color: var(--vscode-terminal-ansiGreen, #4caf50); }
+    .task-status.failed { color: var(--vscode-terminal-ansiRed, #f44747); }
+    .task-output {
       flex: 1;
       overflow-y: auto;
-      padding: 4px;
+      padding: 4px 6px;
       white-space: pre-wrap;
       word-break: break-word;
-      font-family: inherit;
-      font-size: inherit;
       line-height: 1.35;
-    }
-    .output .line { display: flex; gap: 0; }
-    .output .ts {
-      color: var(--vscode-terminal-ansiBrightBlack, #666);
-      flex-shrink: 0;
-      user-select: none;
-    }
-    .output .text { flex: 1; }
-    .output .tool-call .text {
-      color: var(--vscode-terminal-ansiCyan, #9cdcfe);
-    }
-    .output .error-line .text {
-      color: var(--vscode-terminal-ansiRed, #f44747);
-    }
-    .output .system-line .text {
-      color: var(--vscode-terminal-ansiBrightBlack, #666);
-      font-style: italic;
-    }
-    .output .cursor-blink {
-      display: inline-block;
-      width: 7px;
-      height: 1.1em;
-      background: var(--vscode-terminalCursor-foreground, var(--vscode-terminal-foreground, #ccc));
-      animation: blink 1s step-end infinite;
-      vertical-align: text-bottom;
-      margin-left: 2px;
-    }
-    @keyframes blink { 50% { opacity: 0; } }
-    .empty-state {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex: 1;
-      color: var(--vscode-terminal-ansiBrightBlack, var(--vscode-descriptionForeground));
-      font-style: italic;
       font-size: 12px;
     }
-    .empty-state::before { content: "$ "; opacity: 0.5; }
+    .task-output .line { }
+    .task-output .tool-call { color: var(--vscode-terminal-ansiCyan, #9cdcfe); }
+    .task-output .tool-call::before { content: "▸ "; }
+    .task-output .error-line { color: var(--vscode-terminal-ansiRed, #f44747); }
+    .empty-state {
+      display: flex; align-items: center; justify-content: center;
+      flex: 1; color: var(--vscode-descriptionForeground);
+      font-style: italic; font-size: 12px;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
+  <div class="global-header">
     <span class="status-dot" id="statusDot"></span>
-    <span class="status-label" id="statusLabel">Disconnected</span>
-    <span class="badge default" id="modeBadge" style="display:none"></span>
+    <span id="statusLabel">disconnected</span>
   </div>
-  <div class="output" id="output">
-    <div class="empty-state" id="emptyState">Waiting for Claude CLI output…</div>
+  <div id="container">
+    <div class="empty-state" id="emptyState">Waiting for Claude CLI agents…</div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

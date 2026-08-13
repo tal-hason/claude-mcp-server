@@ -1,115 +1,101 @@
 // extension/media/panel.js
 // @ai-rules:
 // 1. [Constraint]: Runs inside VS Code webview sandbox. No Node.js APIs. No imports.
-// 2. [Pattern]: Receives messages via window.addEventListener('message'). Renders streaming text.
+// 2. [Pattern]: Multi-pane layout — each concurrent task gets its own card (like Darwin BlackBoard).
 // 3. [Gotcha]: acquireVsCodeApi() can only be called once per webview lifecycle.
-// 4. [Pattern]: Auto-scroll follows bottom unless user scrolls up (sticky scroll).
-// 5. [Pattern]: Terminal aesthetic — timestamps, prompt prefixes, blinking cursor when running.
+// 4. [Pattern]: Auto-scroll per card. Cards arranged in responsive grid.
 
 (function () {
-  const output = document.getElementById('output');
+  const container = document.getElementById('container');
   const emptyState = document.getElementById('emptyState');
   const statusDot = document.getElementById('statusDot');
   const statusLabel = document.getElementById('statusLabel');
-  const modeBadge = document.getElementById('modeBadge');
 
-  let autoScroll = true;
-  let cursorEl = null;
-  let activeTasks = 0;
-
-  output.addEventListener('scroll', () => {
-    autoScroll = (output.scrollHeight - output.scrollTop - output.clientHeight) < 40;
-  });
-
-  function scrollToBottom() {
-    if (autoScroll) output.scrollTop = output.scrollHeight;
-  }
+  const tasks = new Map();
 
   function ts() {
     const d = new Date();
-    return d.toLocaleTimeString('en-GB', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0').slice(0, 1);
+    return d.toLocaleTimeString('en-GB', { hour12: false });
   }
 
-  function clearOutput() {
-    while (output.lastChild && output.lastChild !== emptyState) {
-      output.removeChild(output.lastChild);
-    }
-    if (emptyState) emptyState.style.display = '';
-    cursorEl = null;
-  }
-
-  function hideEmptyState() {
-    if (emptyState) emptyState.style.display = 'none';
-  }
-
-  function removeCursor() {
-    if (cursorEl) { cursorEl.remove(); cursorEl = null; }
-  }
-
-  function addCursor() {
-    removeCursor();
-    cursorEl = document.createElement('span');
-    cursorEl.className = 'cursor-blink';
-    output.appendChild(cursorEl);
-    scrollToBottom();
-  }
-
-  function appendLine(text, className) {
-    hideEmptyState();
-    removeCursor();
-
-    const line = document.createElement('div');
-    line.className = 'line' + (className ? ' ' + className : '');
-
-    const tsSpan = document.createElement('span');
-    tsSpan.className = 'ts';
-    tsSpan.textContent = ts() + ' ';
-    line.appendChild(tsSpan);
-
-    const textSpan = document.createElement('span');
-    textSpan.className = 'text';
-    textSpan.textContent = text;
-    line.appendChild(textSpan);
-
-    output.appendChild(line);
-    scrollToBottom();
-  }
-
-  function appendSystem(text) {
-    appendLine(text, 'system-line');
-  }
+  function hideEmpty() { if (emptyState) emptyState.style.display = 'none'; }
+  function showEmpty() { if (emptyState && tasks.size === 0) emptyState.style.display = ''; }
 
   function setStatus(state) {
     statusDot.className = 'status-dot';
     switch (state) {
-      case 'connected':
-        statusDot.classList.add('connected');
-        statusLabel.textContent = 'connected';
-        break;
-      case 'running':
-        statusDot.classList.add('running');
-        statusLabel.textContent = 'running';
-        break;
-      case 'done':
-        statusDot.classList.add('connected');
-        statusLabel.textContent = 'done';
-        break;
-      case 'disconnected':
-        statusLabel.textContent = 'reconnecting';
-        break;
-      default:
-        statusLabel.textContent = 'idle';
+      case 'connected': statusDot.classList.add('connected'); statusLabel.textContent = 'connected'; break;
+      case 'running':   statusDot.classList.add('running');   statusLabel.textContent = `running (${tasks.size})`; break;
+      case 'done':      statusDot.classList.add('connected'); statusLabel.textContent = 'done'; break;
+      case 'disconnected': statusLabel.textContent = 'reconnecting'; break;
+      default: statusLabel.textContent = 'idle';
     }
   }
 
-  function setMode(mode) {
-    if (!mode) {
-      modeBadge.style.display = 'none';
-      return;
-    }
-    modeBadge.textContent = mode;
-    modeBadge.className = 'badge ' + (['architect','planner','reviewer','explorer','executor'].includes(mode) ? mode : 'default');
-    modeBadge.style.display = 'inline-block';
+  function createTaskCard(taskId, mode) {
+    hideEmpty();
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    card.id = `task-${taskId}`;
+
+    const header = document.createElement('div');
+    header.className = 'task-header';
+
+    const badge = document.createElement('span');
+    const modeClass = ['architect','planner','reviewer','explorer','executor'].includes(mode) ? mode : 'default';
+    badge.className = `badge ${modeClass}`;
+    badge.textContent = mode || 'prompt';
+    header.appendChild(badge);
+
+    const idSpan = document.createElement('span');
+    idSpan.className = 'task-id';
+    idSpan.textContent = taskId;
+    header.appendChild(idSpan);
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'task-time';
+    timeSpan.textContent = ts();
+    header.appendChild(timeSpan);
+
+    const statusSpan = document.createElement('span');
+    statusSpan.className = 'task-status running';
+    statusSpan.textContent = 'running';
+    header.appendChild(statusSpan);
+
+    card.appendChild(header);
+
+    const output = document.createElement('div');
+    output.className = 'task-output';
+    card.appendChild(output);
+
+    container.prepend(card);
+
+    tasks.set(taskId, { card, output, statusSpan, autoScroll: true });
+
+    output.addEventListener('scroll', () => {
+      const t = tasks.get(taskId);
+      if (t) t.autoScroll = (output.scrollHeight - output.scrollTop - output.clientHeight) < 40;
+    });
+
+    return tasks.get(taskId);
+  }
+
+  function appendToTask(taskId, text, className) {
+    const t = tasks.get(taskId);
+    if (!t) return;
+    const line = document.createElement('div');
+    line.className = 'line' + (className ? ' ' + className : '');
+    line.textContent = text;
+    t.output.appendChild(line);
+    if (t.autoScroll) t.output.scrollTop = t.output.scrollHeight;
+  }
+
+  function finishTask(taskId, exitCode) {
+    const t = tasks.get(taskId);
+    if (!t) return;
+    t.statusSpan.textContent = exitCode === 0 ? 'done' : `exit ${exitCode}`;
+    t.statusSpan.className = `task-status ${exitCode === 0 ? 'done' : 'failed'}`;
+    t.card.classList.add('completed');
   }
 
   window.addEventListener('message', (event) => {
@@ -119,41 +105,30 @@
     switch (msg.type) {
       case 'ws-status':
         setStatus(msg.connected ? 'connected' : 'disconnected');
-        if (msg.connected) appendSystem('ws connected');
         break;
 
       case 'status': {
-        const tag = msg.taskId ? `[${msg.taskId}] ` : '';
+        const id = msg.taskId || 'default';
         if (msg.state === 'running') {
-          activeTasks++;
+          createTaskCard(id, msg.mode);
           setStatus('running');
-          setMode(msg.mode || null);
-          appendSystem(`${tag}claude` + (msg.mode ? ` --mode ${msg.mode}` : ''));
-          addCursor();
         } else if (msg.state === 'done') {
-          activeTasks = Math.max(0, activeTasks - 1);
-          const code = msg.exitCode ?? '?';
-          appendSystem(`${tag}exit ${code}` + (code === 0 ? '' : ' [FAILED]'));
-          if (activeTasks === 0) { removeCursor(); setStatus('done'); }
+          finishTask(id, msg.exitCode ?? 1);
+          const running = [...tasks.values()].filter(t => !t.card.classList.contains('completed'));
+          setStatus(running.length > 0 ? 'running' : 'done');
         }
         break;
       }
 
       case 'content': {
         if (!msg.text) break;
-        removeCursor();
-        const tag = msg.taskId ? `[${msg.taskId}] ` : '';
-        const lines = msg.text.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('[tool] ')) {
-            appendLine(tag + line, 'tool-call');
-          } else if (line.startsWith('[error]')) {
-            appendLine(tag + line, 'error-line');
-          } else {
-            appendLine(tag + line);
-          }
+        const id = msg.taskId || 'default';
+        if (!tasks.has(id)) createTaskCard(id, null);
+        for (const line of msg.text.split('\n')) {
+          if (line.startsWith('[tool] ')) appendToTask(id, line, 'tool-call');
+          else if (line.startsWith('[error]')) appendToTask(id, line, 'error-line');
+          else appendToTask(id, line);
         }
-        addCursor();
         break;
       }
     }
