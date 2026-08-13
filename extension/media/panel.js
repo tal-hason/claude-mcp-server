@@ -46,7 +46,7 @@
     }
   }
 
-  function createTaskCard(taskId, mode) {
+  function createTaskCard(taskId, mode, model) {
     hideEmpty();
     const card = document.createElement('div');
     const modeClass = ['architect','planner','reviewer','explorer','executor'].includes(mode) ? mode : 'default';
@@ -60,6 +60,13 @@
     badge.className = `badge ${modeClass}`;
     badge.textContent = mode || 'prompt';
     header.appendChild(badge);
+
+    if (model) {
+      const modelSpan = document.createElement('span');
+      modelSpan.className = 'task-model';
+      modelSpan.textContent = model;
+      header.appendChild(modelSpan);
+    }
 
     const idSpan = document.createElement('span');
     idSpan.className = 'task-id';
@@ -125,7 +132,7 @@
         const id = msg.taskId || 'default';
         if (msg.state === 'running') {
           clearCompleted();
-          createTaskCard(id, msg.mode);
+          createTaskCard(id, msg.mode, msg.model);
           setStatus('running');
         } else if (msg.state === 'done') {
           finishTask(id, msg.exitCode ?? 1);
@@ -138,7 +145,7 @@
       case 'content': {
         if (!msg.text) break;
         const id = msg.taskId || 'default';
-        if (!tasks.has(id)) createTaskCard(id, null);
+        if (!tasks.has(id)) createTaskCard(id, null, msg.model);
         for (const line of msg.text.split('\n')) {
           if (line.startsWith('[tool] ')) appendToTask(id, line, 'tool-call');
           else if (line.startsWith('[error]')) appendToTask(id, line, 'error-line');

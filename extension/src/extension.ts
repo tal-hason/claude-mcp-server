@@ -212,6 +212,10 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     .badge.explorer { background: #059669; color: #fff; }
     .badge.executor { background: #d97706; color: #fff; }
     .badge.default  { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
+    .task-model {
+      color: var(--vscode-terminal-ansiYellow, #cca700);
+      font-size: 10px; font-weight: 500;
+    }
     .task-id {
       color: var(--vscode-terminal-ansiBrightBlack, #888);
       font-size: 10px; font-family: monospace;

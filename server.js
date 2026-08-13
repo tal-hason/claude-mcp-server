@@ -76,7 +76,7 @@ serveStdio(() => {
           prompt, model, effort: effectiveEffort, systemPrompt,
           appendSystemPrompt, sessionId, cwd,
           onProgress: (msg) => { notifyProgress(msg); },
-          onBroadcast: (data) => { broadcast({ ...data, mode: mode || null }); },
+          onBroadcast: (data) => { broadcast({ ...data, mode: mode || null, model: model || null }); },
         });
 
         const parts = [result.output];
