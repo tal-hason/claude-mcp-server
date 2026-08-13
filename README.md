@@ -69,6 +69,7 @@ Without `mode`, the tool passes through raw (caller controls everything).
 | `systemPrompt` | No | System prompt override |
 | `sessionId` | No | Resume a previous session |
 | `cwd` | No | Working directory for Claude CLI |
+| `timeoutMs` | No | Max execution time before the process is killed. Default `600000` (10 min). Increase for large file reads or high/max effort reviews — a timed-out call returns a `[TIMEOUT]` marker instead of throwing |
 
 ## How it works
 

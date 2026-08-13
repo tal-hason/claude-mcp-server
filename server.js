@@ -65,6 +65,11 @@ serveStdio(() => {
         'Each call returns a sessionId. Passing it back resumes that agent\'s conversation —',
         'it remembers everything from the previous turn. Use this for multi-step delegation,',
         'not for one-shot queries.',
+        '',
+        'WHAT timeoutMs means:',
+        'Default is 10 minutes. A reviewer or architect reading many large files under high/max',
+        'effort can legitimately need longer — if you expect a big diff or a full-repo read,',
+        'pass a larger timeoutMs upfront rather than discovering a [TIMEOUT] marker after the fact.',
       ].join('\n'),
     },
   );
@@ -86,9 +91,10 @@ serveStdio(() => {
         systemPrompt: z.string().optional().describe('System prompt override (--system-prompt). Independent of mode appendSystemPrompt.'),
         sessionId: z.string().optional().describe('Resume a previous session by ID'),
         cwd: z.string().optional().describe('Working directory for Claude CLI'),
+        timeoutMs: z.number().int().positive().optional().describe('Max execution time in ms before the process is killed. Default 600000 (10 min). Increase for large file reads, high/max effort, or big diffs — a timed-out call returns a [TIMEOUT] marker instead of throwing.'),
       }),
     },
-    async ({ prompt, mode, model, effort, systemPrompt, sessionId, cwd }, ctx) => {
+    async ({ prompt, mode, model, effort, systemPrompt, sessionId, cwd, timeoutMs }, ctx) => {
       const progressToken = ctx.mcpReq._meta?.progressToken;
       let progressCount = 0;
 
@@ -112,7 +118,7 @@ serveStdio(() => {
       try {
         const result = await executeClaude({
           prompt, model, effort: effectiveEffort, systemPrompt,
-          appendSystemPrompt, sessionId, cwd,
+          appendSystemPrompt, sessionId, cwd, timeoutMs,
           onProgress: (msg) => { notifyProgress(msg); },
           onBroadcast: (data) => {
             // data.model (resolved from CLI stream) takes priority over the caller-supplied

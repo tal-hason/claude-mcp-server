@@ -103,6 +103,7 @@ describe('cli-executor onBroadcast', () => {
     assert.ok(result.output.length > 0, 'Expected non-empty output');
     assert.equal(result.sessionId, 'test-session-42');
     assert.equal(result.exitCode, 0);
+    assert.equal(result.timedOut, false);
   });
 
   it('onBroadcast undefined does not throw', async () => {

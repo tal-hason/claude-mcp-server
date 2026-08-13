@@ -9,16 +9,21 @@
 //    annotations) is only used as fallback for interrupted streams where the result event never arrived.
 // 7. [Pattern]: onBroadcast callback for WS bridge — NOT debounced. Tagged with taskId for panel routing.
 // 8. [Pattern]: CLAUDE_BIN env var overrides PATH-based resolution of the claude binary.
-// 9. [Pattern]: Spawn timeout uses SIGKILL as killSignal so hung processes are forcibly reaped.
+// 9. [Pattern]: killWithEscalation (SIGTERM -> SIGKILL after SIGKILL_DELAY_MS) is reused for both
+//    graceful shutdown (killActive) and timeout kills — see #11.
 // 10. [Pattern]: onBroadcast emits a one-shot { type: 'model' } event once the CLI's system.init line
 //     reports the actually-resolved model — the caller-supplied `model` opt is usually undefined
 //     (modes don't pin models), so this is the only reliable "which model ran" signal.
+// 11. [Pattern]: Timeout is a manual timer (not spawn's built-in timeout/killSignal option) so we can
+//     attribute the kill and surface a [TIMEOUT] marker in output instead of silently returning
+//     partial/empty text. Reviewer/architect modes reading many large files can legitimately exceed
+//     the default — callers should pass a larger `timeoutMs`, not assume 5 min is universal.
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { parseStreamLine } from './stream-parser.js';
 
-const DEFAULT_TIMEOUT_MS = 300_000; // 5 min
+const DEFAULT_TIMEOUT_MS = 600_000; // 10 min — deep reviewer/architect audits with many file reads need headroom
 const PROGRESS_DEBOUNCE_MS = 500;
 const SIGKILL_DELAY_MS = 5_000;
 const MAX_CONCURRENT = 5;
@@ -53,7 +58,7 @@ function killWithEscalation(child) {
  * @param {number} [opts.timeoutMs]
  * @param {(msg: string) => void} [opts.onProgress]
  * @param {(data: object) => void} [opts.onBroadcast]
- * @returns {Promise<{ output: string, sessionId: string|null, exitCode: number, taskId: string }>}
+ * @returns {Promise<{ output: string, sessionId: string|null, exitCode: number, timedOut: boolean, taskId: string }>}
  */
 export function executeClaude(opts) {
   if (_children.size >= MAX_CONCURRENT) {
@@ -83,14 +88,18 @@ export function executeClaude(opts) {
 
     const child = spawn(CLAUDE_BIN, args, {
       cwd: cwd || process.cwd(),
-      timeout: timeoutMs,
-      killSignal: 'SIGKILL',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
     });
 
     _children.set(taskId, child);
     if (onBroadcast) onBroadcast({ type: 'status', state: 'running', taskId });
+
+    let timedOut = false;
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      killWithEscalation(child);
+    }, timeoutMs);
 
     let lineBuffer = '';
     let textAccum = '';
@@ -136,6 +145,7 @@ export function executeClaude(opts) {
     child.stderr.on('data', (data) => { stderr += data.toString(); });
 
     child.on('close', (code) => {
+      clearTimeout(timeoutTimer);
       _children.delete(taskId);
 
       if (lineBuffer.trim()) {
@@ -148,19 +158,24 @@ export function executeClaude(opts) {
         if (parsed?.sessionId) capturedSessionId = parsed.sessionId;
       }
 
-      if (onBroadcast) onBroadcast({ type: 'status', state: 'done', exitCode: code ?? 1, taskId });
+      if (onBroadcast) onBroadcast({ type: 'status', state: 'done', exitCode: code ?? 1, timedOut, taskId });
 
       // Result event is the clean final answer (no tool annotations).
       // textAccum includes [tool] lines — only used as fallback for interrupted streams.
-      const output = resultFallback?.trim()
+      let output = resultFallback?.trim()
         || textAccum.trim()
         || stderr.trim()
         || '(no output)';
 
-      resolve({ output, sessionId: capturedSessionId, exitCode: code ?? 1, taskId });
+      if (timedOut) {
+        output += `\n\n[TIMEOUT: killed after ${timeoutMs}ms — pass a larger timeoutMs for large file reads or high/max effort reviews]`;
+      }
+
+      resolve({ output, sessionId: capturedSessionId, exitCode: code ?? 1, timedOut, taskId });
     });
 
     child.on('error', (err) => {
+      clearTimeout(timeoutTimer);
       _children.delete(taskId);
       reject(new Error(`Failed to spawn ${CLAUDE_BIN}: ${err.message}`));
     });
