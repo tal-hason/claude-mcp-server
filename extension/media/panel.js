@@ -15,6 +15,7 @@
 
   let autoScroll = true;
   let cursorEl = null;
+  let activeTasks = 0;
 
   output.addEventListener('scroll', () => {
     autoScroll = (output.scrollHeight - output.scrollTop - output.clientHeight) < 40;
@@ -124,14 +125,16 @@
       case 'status': {
         const tag = msg.taskId ? `[${msg.taskId}] ` : '';
         if (msg.state === 'running') {
+          activeTasks++;
           setStatus('running');
           setMode(msg.mode || null);
           appendSystem(`${tag}claude` + (msg.mode ? ` --mode ${msg.mode}` : ''));
           addCursor();
         } else if (msg.state === 'done') {
+          activeTasks = Math.max(0, activeTasks - 1);
           const code = msg.exitCode ?? '?';
           appendSystem(`${tag}exit ${code}` + (code === 0 ? '' : ' [FAILED]'));
-          if (_children === 0) { removeCursor(); setStatus('done'); }
+          if (activeTasks === 0) { removeCursor(); setStatus('done'); }
         }
         break;
       }
