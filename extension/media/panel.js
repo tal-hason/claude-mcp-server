@@ -4,6 +4,9 @@
 // 2. [Pattern]: Multi-pane layout — each concurrent task gets its own card (like Darwin BlackBoard).
 // 3. [Gotcha]: acquireVsCodeApi() can only be called once per webview lifecycle.
 // 4. [Pattern]: Auto-scroll per card. Cards arranged in responsive grid.
+// 5. [Pattern]: Model is usually unknown at card creation (modes don't pin models) — a hidden
+//    `.task-model` span is created upfront and revealed via setTaskModel() once the server
+//    broadcasts a { type: 'model' } event (fired when the CLI's own init line resolves it).
 
 (function () {
   const container = document.getElementById('container');
@@ -61,12 +64,13 @@
     badge.textContent = mode || 'prompt';
     header.appendChild(badge);
 
-    if (model) {
-      const modelSpan = document.createElement('span');
-      modelSpan.className = 'task-model';
-      modelSpan.textContent = model;
-      header.appendChild(modelSpan);
-    }
+    // Model is usually unknown at spawn time (modes don't pin models) — placeholder
+    // element created upfront so setTaskModel() can fill it in once the CLI resolves it.
+    const modelSpan = document.createElement('span');
+    modelSpan.className = 'task-model';
+    modelSpan.textContent = model || '';
+    modelSpan.style.display = model ? '' : 'none';
+    header.appendChild(modelSpan);
 
     const idSpan = document.createElement('span');
     idSpan.className = 'task-id';
@@ -90,7 +94,7 @@
     card.appendChild(output);
 
     container.prepend(card);
-    tasks.set(taskId, { card, output, statusSpan, autoScroll: true });
+    tasks.set(taskId, { card, output, statusSpan, modelSpan, autoScroll: true });
     container.classList.toggle('single-card', tasks.size === 1);
 
     output.addEventListener('scroll', () => {
@@ -109,6 +113,14 @@
     line.textContent = text;
     t.output.appendChild(line);
     if (t.autoScroll) t.output.scrollTop = t.output.scrollHeight;
+  }
+
+  function setTaskModel(taskId, model) {
+    if (!model) return;
+    const t = tasks.get(taskId);
+    if (!t || !t.modelSpan) return;
+    t.modelSpan.textContent = model;
+    t.modelSpan.style.display = '';
   }
 
   function finishTask(taskId, exitCode) {
@@ -146,11 +158,17 @@
         if (!msg.text) break;
         const id = msg.taskId || 'default';
         if (!tasks.has(id)) createTaskCard(id, null, msg.model);
+        else setTaskModel(id, msg.model);
         for (const line of msg.text.split('\n')) {
           if (line.startsWith('[tool] ')) appendToTask(id, line, 'tool-call');
           else if (line.startsWith('[error]')) appendToTask(id, line, 'error-line');
           else appendToTask(id, line);
         }
+        break;
+      }
+
+      case 'model': {
+        setTaskModel(msg.taskId || 'default', msg.model);
         break;
       }
     }

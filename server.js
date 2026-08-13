@@ -7,6 +7,8 @@
 // 5. [Constraint]: All stderr logging — stdout is the MCP JSON-RPC transport.
 // 6. [Pattern]: SIGTERM/SIGINT → killActive() + stopWSBridge() ensures clean shutdown.
 // 7. [Pattern]: WS bridge starts at module level (before serveStdio) so it's ready before first tool call.
+// 8. [Pattern]: broadcast model field prefers data.model (CLI-resolved) over the caller's model opt,
+//    since callers rarely pin a model explicitly — see cli-executor.js 'model' event.
 
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
@@ -112,7 +114,11 @@ serveStdio(() => {
           prompt, model, effort: effectiveEffort, systemPrompt,
           appendSystemPrompt, sessionId, cwd,
           onProgress: (msg) => { notifyProgress(msg); },
-          onBroadcast: (data) => { broadcast({ ...data, mode: mode || null, model: model || null }); },
+          onBroadcast: (data) => {
+            // data.model (resolved from CLI stream) takes priority over the caller-supplied
+            // model opt, which is usually undefined since modes don't pin models by design.
+            broadcast({ ...data, mode: mode || null, model: data.model || model || null });
+          },
         });
 
         const parts = [result.output];

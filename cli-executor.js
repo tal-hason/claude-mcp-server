@@ -10,6 +10,9 @@
 // 7. [Pattern]: onBroadcast callback for WS bridge — NOT debounced. Tagged with taskId for panel routing.
 // 8. [Pattern]: CLAUDE_BIN env var overrides PATH-based resolution of the claude binary.
 // 9. [Pattern]: Spawn timeout uses SIGKILL as killSignal so hung processes are forcibly reaped.
+// 10. [Pattern]: onBroadcast emits a one-shot { type: 'model' } event once the CLI's system.init line
+//     reports the actually-resolved model — the caller-supplied `model` opt is usually undefined
+//     (modes don't pin models), so this is the only reliable "which model ran" signal.
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -93,6 +96,7 @@ export function executeClaude(opts) {
     let textAccum = '';
     let resultFallback = null;
     let capturedSessionId = null;
+    let capturedModel = null;
     let lastProgressTime = 0;
 
     child.stdout.on('data', (data) => {
@@ -105,6 +109,10 @@ export function executeClaude(opts) {
         const parsed = parseStreamLine(line);
         if (!parsed) continue;
         if (parsed.sessionId) capturedSessionId = parsed.sessionId;
+        if (parsed.model && !capturedModel) {
+          capturedModel = parsed.model;
+          if (onBroadcast) onBroadcast({ type: 'model', model: capturedModel, taskId });
+        }
         if (parsed.done && parsed.text) {
           resultFallback = parsed.text;
         }

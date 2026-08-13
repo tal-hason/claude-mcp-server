@@ -3,6 +3,8 @@
 // 1. [Constraint]: Pure JSON parsing — no side effects, no state, no I/O.
 // 2. [Pattern]: Ported from gemini-sidecar/stream-parser.js to ESM. Handles Claude --output-format stream-json.
 // 3. [Gotcha]: Non-JSON input returns { text: line } (raw line as text); JSON parse errors caught, not thrown.
+// 4. [Pattern]: system.init carries the CLI's actually-resolved model — callers rarely pin `model` explicitly
+//    (modes don't pin models by design), so this is the only reliable source for "which model ran".
 
 /**
  * Parse a single line from Claude CLI's --output-format stream-json.
@@ -13,14 +15,15 @@
  *   {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
  *   {"type":"result","subtype":"success","result":"...","duration_ms":...}
  *
- * Returns { text, sessionId, done } or null if not user-facing.
+ * Returns { text, sessionId, done, model? } or null if not user-facing.
+ * `model` is only present on the system.init result — the resolved model name from the CLI itself.
  */
 export function parseStreamLine(line) {
   try {
     const obj = JSON.parse(line);
 
     if (obj.type === 'system' && obj.subtype === 'init') {
-      return { text: null, sessionId: obj.session_id || null, done: false };
+      return { text: null, sessionId: obj.session_id || null, model: obj.model || null, done: false };
     }
 
     if (obj.type === 'assistant' && obj.message?.content) {

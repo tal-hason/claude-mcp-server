@@ -10,7 +10,7 @@ import { parseStreamLine } from '../stream-parser.js';
 
 describe('parseStreamLine', () => {
   describe('system.init', () => {
-    it('extracts session_id and signals not done', () => {
+    it('extracts session_id, model, and signals not done', () => {
       const line = JSON.stringify({
         type: 'system',
         subtype: 'init',
@@ -24,6 +24,7 @@ describe('parseStreamLine', () => {
       assert.deepEqual(result, {
         text: null,
         sessionId: 'sess-abc-123',
+        model: 'claude-sonnet-5',
         done: false,
       });
     });
@@ -39,6 +40,19 @@ describe('parseStreamLine', () => {
 
       assert.equal(result.sessionId, null);
       assert.equal(result.done, false);
+    });
+
+    it('returns null model when model is missing', () => {
+      const line = JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        session_id: 'sess-1',
+        tools: [],
+      });
+
+      const result = parseStreamLine(line);
+
+      assert.equal(result.model, null);
     });
   });
 

@@ -81,6 +81,20 @@ describe('cli-executor onBroadcast', () => {
     assert.ok(hasDone, `Expected a done status broadcast. Got last 3: ${JSON.stringify(broadcasts.slice(-3))}`);
   });
 
+  it('onBroadcast receives a one-shot model event from the CLI-resolved model', async () => {
+    const executeClaude = await loadExecutor();
+    const broadcasts = [];
+
+    await executeClaude({
+      prompt: 'test',
+      onBroadcast: (msg) => broadcasts.push(msg),
+    });
+
+    const modelEvents = broadcasts.filter((m) => m?.type === 'model');
+    assert.equal(modelEvents.length, 1, `Expected exactly one model event, got: ${JSON.stringify(modelEvents)}`);
+    assert.equal(modelEvents[0].model, 'claude-sonnet-5');
+  });
+
   it('execution works without onBroadcast (backward compat)', async () => {
     const executeClaude = await loadExecutor();
 
