@@ -29,7 +29,42 @@ process.on('SIGINT', shutdown);
 serveStdio(() => {
   const server = new McpServer(
     { name: 'claude-cli', version: '0.2.0' },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      instructions: [
+        'This tool gives you a second brain — a separate Claude process running on the user\'s machine',
+        'with its own context, auth, and reasoning budget. When you call it, you are spawning an',
+        'independent agent, not making an API call. That agent sees the local filesystem, has the',
+        'user\'s ~/.claude/CLAUDE.md loaded, and runs to completion before returning.',
+        '',
+        'WHY this exists:',
+        'You are a single agent with one context window. This tool lets you delegate work to a peer',
+        'that thinks independently. Use it when your own context is full, when you need a fresh',
+        'perspective unconstrained by your current reasoning, or when parallel work would be faster',
+        'than sequential. The other agent does not share your conversation — it starts clean.',
+        '',
+        'WHAT the modes mean:',
+        'Modes are not parameter presets — they shape how the other agent thinks.',
+        '- architect: thinks about system boundaries and trade-offs, not implementation details.',
+        '- planner: produces step-by-step plans with verification criteria, does not write code.',
+        '- reviewer: adversarial — finds defects, grades severity, challenges assumptions.',
+        '- explorer: fast and narrow — answers a specific question with evidence, nothing more.',
+        '- executor: writes code in small verifiable batches, focuses on correctness.',
+        'Without a mode, the agent has no role constraint — you control its behavior entirely via prompt.',
+        '',
+        'WHEN to reach for this tool:',
+        '- You want a code review but you wrote the code — send it to reviewer for an independent eye.',
+        '- You need to explore a codebase you haven\'t read — send explorer to a specific directory.',
+        '- You\'re planning a large change — have planner draft the plan while you continue other work.',
+        '- You want to validate your architecture — architect will challenge it without being polite.',
+        '- You need parallel execution — you can spawn up to 5 agents simultaneously.',
+        '',
+        'WHAT sessionId means:',
+        'Each call returns a sessionId. Passing it back resumes that agent\'s conversation —',
+        'it remembers everything from the previous turn. Use this for multi-step delegation,',
+        'not for one-shot queries.',
+      ].join('\n'),
+    },
   );
 
   server.registerTool(
