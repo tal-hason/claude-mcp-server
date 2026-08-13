@@ -52,6 +52,10 @@ function createOrShowPanel(context: vscode.ExtensionContext) {
     disconnectWS();
   }, null, context.subscriptions);
 
+  _panel.webview.onDidReceiveMessage((msg) => {
+    if (msg.command === 'reconnect') connectWS();
+  }, null, context.subscriptions);
+
   connectWS();
 }
 
@@ -151,6 +155,13 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     .status-dot.connected { background: var(--vscode-terminal-ansiGreen, #4caf50); }
     .status-dot.running { background: var(--vscode-terminal-ansiYellow, #ff9800); animation: pulse 1s infinite; }
     @keyframes pulse { 50% { opacity: 0.3; } }
+    #reconnectBtn {
+      margin-left: auto;
+      background: none; border: 1px solid var(--vscode-panel-border, #555);
+      color: var(--vscode-foreground); border-radius: 3px;
+      padding: 0 6px; font-size: 13px; cursor: pointer; line-height: 1.6;
+    }
+    #reconnectBtn:hover { background: var(--vscode-toolbar-hoverBackground, #333); }
 
     #container {
       flex: 1;
@@ -238,6 +249,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
   <div class="global-header">
     <span class="status-dot" id="statusDot"></span>
     <span id="statusLabel">disconnected</span>
+    <button id="reconnectBtn" title="Reconnect">↻</button>
   </div>
   <div id="container">
     <div class="empty-state" id="emptyState">Waiting for Claude CLI agents…</div>

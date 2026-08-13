@@ -11,7 +11,12 @@
   const statusDot = document.getElementById('statusDot');
   const statusLabel = document.getElementById('statusLabel');
 
+  const vscode = acquireVsCodeApi();
   const tasks = new Map();
+
+  document.getElementById('reconnectBtn').addEventListener('click', () => {
+    vscode.postMessage({ command: 'reconnect' });
+  });
 
   function ts() {
     const d = new Date();
