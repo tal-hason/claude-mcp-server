@@ -35,7 +35,8 @@
   function createTaskCard(taskId, mode) {
     hideEmpty();
     const card = document.createElement('div');
-    card.className = 'task-card';
+    const modeClass = ['architect','planner','reviewer','explorer','executor'].includes(mode) ? mode : 'default';
+    card.className = `task-card mode-${modeClass}`;
     card.id = `task-${taskId}`;
 
     const header = document.createElement('div');

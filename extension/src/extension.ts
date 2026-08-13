@@ -155,35 +155,39 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     #container {
       flex: 1;
       overflow-y: auto;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-      padding: 4px 0;
-      align-content: flex-start;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 8px;
+      padding: 8px 4px;
+      align-content: start;
     }
     .task-card {
-      border: 1px solid var(--vscode-panel-border, #333);
-      border-radius: 4px;
+      border-radius: 8px;
       display: flex;
       flex-direction: column;
-      min-width: 280px;
-      max-width: 100%;
-      flex: 1 1 calc(50% - 4px);
-      max-height: 300px;
+      max-height: 350px;
       overflow: hidden;
+      border-left: 3px solid #6b7280;
+      transition: opacity 0.3s;
     }
-    .task-card.completed { opacity: 0.7; }
+    .task-card.mode-architect { border-left-color: #7c3aed; background: rgba(124,58,237,0.05); }
+    .task-card.mode-planner  { border-left-color: #2563eb; background: rgba(37,99,235,0.05); }
+    .task-card.mode-reviewer { border-left-color: #dc2626; background: rgba(220,38,38,0.05); }
+    .task-card.mode-explorer { border-left-color: #059669; background: rgba(5,150,105,0.05); }
+    .task-card.mode-executor { border-left-color: #d97706; background: rgba(217,119,6,0.05); }
+    .task-card.mode-default  { border-left-color: #6b7280; background: rgba(107,114,128,0.05); }
+    .task-card.completed { opacity: 0.5; }
     .task-header {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 3px 6px;
+      gap: 8px;
+      padding: 6px 10px;
       border-bottom: 1px solid var(--vscode-panel-border, #333);
       flex-shrink: 0;
       font-size: 11px;
     }
     .badge {
-      padding: 1px 6px; border-radius: 3px;
+      padding: 2px 8px; border-radius: 10px;
       font-size: 10px; font-weight: 700;
       text-transform: uppercase; letter-spacing: 0.5px;
     }
@@ -195,7 +199,7 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
     .badge.default  { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
     .task-id {
       color: var(--vscode-terminal-ansiBrightBlack, #888);
-      font-size: 10px;
+      font-size: 10px; font-family: monospace;
     }
     .task-time {
       color: var(--vscode-terminal-ansiBrightBlack, #888);
@@ -206,24 +210,26 @@ function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): stri
       font-size: 10px; font-weight: 600;
     }
     .task-status.running { color: var(--vscode-terminal-ansiYellow, #ff9800); }
+    .task-status.running::after { content: " ●"; animation: pulse 1s infinite; }
     .task-status.done { color: var(--vscode-terminal-ansiGreen, #4caf50); }
     .task-status.failed { color: var(--vscode-terminal-ansiRed, #f44747); }
     .task-output {
       flex: 1;
       overflow-y: auto;
-      padding: 4px 6px;
+      padding: 8px 12px;
       white-space: pre-wrap;
       word-break: break-word;
-      line-height: 1.35;
+      line-height: 1.4;
       font-size: 12px;
     }
-    .task-output .line { }
+    .task-output .line { padding: 1px 0; }
     .task-output .tool-call { color: var(--vscode-terminal-ansiCyan, #9cdcfe); }
     .task-output .tool-call::before { content: "▸ "; }
     .task-output .error-line { color: var(--vscode-terminal-ansiRed, #f44747); }
     .empty-state {
+      grid-column: 1 / -1;
       display: flex; align-items: center; justify-content: center;
-      flex: 1; color: var(--vscode-descriptionForeground);
+      min-height: 200px; color: var(--vscode-descriptionForeground);
       font-style: italic; font-size: 12px;
     }
   </style>
