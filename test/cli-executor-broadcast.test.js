@@ -74,7 +74,7 @@ describe('cli-executor onBroadcast', () => {
 
     const hasDone = broadcasts.some((m) => {
       if (typeof m === 'object' && m !== null) {
-        return m.status === 'done' || (m.type === 'status' && m.status === 'done') || m.done === true;
+        return m.state === 'done' || (m.type === 'status' && m.state === 'done');
       }
       return typeof m === 'string' && /done|complete/i.test(m);
     });

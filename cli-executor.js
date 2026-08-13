@@ -97,8 +97,8 @@ export function executeClaude(opts) {
         if (parsed.done && parsed.text) {
           resultFallback = parsed.text;
         }
-        if (onBroadcast && parsed.text) {
-          onBroadcast({ type: 'content', text: parsed.text, done: parsed.done });
+        if (onBroadcast && parsed.text && !parsed.done) {
+          onBroadcast({ type: 'content', text: parsed.text });
         }
         if (parsed.text && !parsed.done) {
           textAccum += parsed.text + '\n';
