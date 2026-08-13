@@ -20,7 +20,8 @@ startWSBridge();
 function shutdown() {
   killActive();
   stopWSBridge();
-  setTimeout(() => process.exit(0), 6000);
+  const t = setTimeout(() => process.exit(0), 6000);
+  t.unref();
 }
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

@@ -3,10 +3,13 @@
 // 1. [Pattern]: Spawns claude CLI with --print --output-format stream-json. Returns { output, sessionId }.
 // 2. [Pattern]: onProgress callback receives parsed stream lines for MCP progress notifications (debounced).
 // 3. [Pattern]: Concurrent pool — up to MAX_CONCURRENT CLI processes tracked by taskId in _children Map.
-// 4. [Pattern]: SIGKILL escalation — if SIGTERM doesn't kill within 5s, escalate to SIGKILL.
+// 4. [Pattern]: SIGKILL escalation uses exit-flag (not child.killed which is set on signal send, not death).
 // 5. [Pattern]: systemPrompt and appendSystemPrompt are independent. Neither affects ~/.claude/CLAUDE.md.
-// 6. [Pattern]: Result-event text stored as fallback for interrupted streams.
+// 6. [Pattern]: Result-event text (resultFallback) is the PRIMARY output. textAccum (which includes tool
+//    annotations) is only used as fallback for interrupted streams where the result event never arrived.
 // 7. [Pattern]: onBroadcast callback for WS bridge — NOT debounced. Tagged with taskId for panel routing.
+// 8. [Pattern]: CLAUDE_BIN env var overrides PATH-based resolution of the claude binary.
+// 9. [Pattern]: Spawn timeout uses SIGKILL as killSignal so hung processes are forcibly reaped.
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -16,13 +19,18 @@ const DEFAULT_TIMEOUT_MS = 300_000; // 5 min
 const PROGRESS_DEBOUNCE_MS = 500;
 const SIGKILL_DELAY_MS = 5_000;
 const MAX_CONCURRENT = 5;
+const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 
 const _children = new Map();
 
 function killWithEscalation(child) {
+  let exited = false;
+  child.on('exit', () => { exited = true; });
   child.kill('SIGTERM');
   const escalation = setTimeout(() => {
-    if (!child.killed) child.kill('SIGKILL');
+    if (!exited) {
+      try { child.kill('SIGKILL'); } catch {}
+    }
   }, SIGKILL_DELAY_MS);
   child.on('exit', () => clearTimeout(escalation));
 }
@@ -30,7 +38,6 @@ function killWithEscalation(child) {
 /**
  * Execute Claude CLI and stream progress via callback.
  * Supports up to MAX_CONCURRENT parallel executions.
- * Each call is assigned a unique taskId for WS broadcast tagging.
  *
  * @param {object} opts
  * @param {string} opts.prompt
@@ -71,9 +78,10 @@ export function executeClaude(opts) {
     if (sessionId) args.push('--resume', sessionId);
     args.push('-p', prompt);
 
-    const child = spawn('claude', args, {
+    const child = spawn(CLAUDE_BIN, args, {
       cwd: cwd || process.cwd(),
       timeout: timeoutMs,
+      killSignal: 'SIGKILL',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
     });
@@ -134,8 +142,10 @@ export function executeClaude(opts) {
 
       if (onBroadcast) onBroadcast({ type: 'status', state: 'done', exitCode: code ?? 1, taskId });
 
-      const output = textAccum.trim()
-        || resultFallback?.trim()
+      // Result event is the clean final answer (no tool annotations).
+      // textAccum includes [tool] lines — only used as fallback for interrupted streams.
+      const output = resultFallback?.trim()
+        || textAccum.trim()
         || stderr.trim()
         || '(no output)';
 
@@ -144,7 +154,7 @@ export function executeClaude(opts) {
 
     child.on('error', (err) => {
       _children.delete(taskId);
-      reject(new Error(`Failed to spawn claude: ${err.message}`));
+      reject(new Error(`Failed to spawn ${CLAUDE_BIN}: ${err.message}`));
     });
   });
 }
