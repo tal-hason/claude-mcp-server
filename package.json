@@ -1,0 +1,17 @@
+{
+  "name": "claude-mcp-server",
+  "version": "0.2.0",
+  "description": "MCP server wrapping Claude CLI — lets Cursor use Claude as a sub-agent",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "zod": "^4.4.3"
+  }
+}
