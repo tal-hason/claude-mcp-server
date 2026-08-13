@@ -1,0 +1,30 @@
+{
+  "name": "claude-cli-panel",
+  "displayName": "Claude CLI Panel",
+  "description": "Streaming view for Claude CLI execution via MCP bridge",
+  "version": "0.1.0",
+  "publisher": "thason",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onCommand:claudeCli.showPanel"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeCli.showPanel",
+        "title": "Claude CLI: Show Panel"
+      }
+    ]
+  },
+  "dependencies": {
+    "ws": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.0.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

@@ -8,6 +8,8 @@
 //    independent. Both pass through simultaneously. Neither affects ~/.claude/CLAUDE.md discovery.
 // 6. [Pattern]: Result-event text stored as fallback — if stream was interrupted and textAccum is empty,
 //    the result event's text is used instead of returning '(no output)'.
+// 7. [Pattern]: onBroadcast callback for WS bridge — NOT debounced (full fidelity for extension panel).
+//    Receives every parsed line + status messages ({ type: 'status', state: 'running'|'done' }).
 
 import { spawn } from 'node:child_process';
 import { parseStreamLine } from './stream-parser.js';
@@ -39,6 +41,7 @@ function killWithEscalation(child) {
  * @param {string} [opts.cwd]               - Working directory
  * @param {number} [opts.timeoutMs]          - Process timeout
  * @param {(msg: string) => void} [opts.onProgress] - Stream callback (debounced at 500ms)
+ * @param {(data: object) => void} [opts.onBroadcast] - WS bridge callback (full fidelity, no debounce)
  * @returns {Promise<{ output: string, sessionId: string|null, exitCode: number }>}
  */
 export function executeClaude(opts) {
@@ -48,7 +51,7 @@ export function executeClaude(opts) {
 
   const {
     prompt, model, effort, systemPrompt, appendSystemPrompt,
-    sessionId, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, onProgress,
+    sessionId, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, onProgress, onBroadcast,
   } = opts;
 
   return new Promise((resolve, reject) => {
@@ -73,6 +76,7 @@ export function executeClaude(opts) {
     });
 
     _activeChild = child;
+    if (onBroadcast) onBroadcast({ type: 'status', state: 'running' });
 
     let lineBuffer = '';
     let textAccum = '';
@@ -92,6 +96,9 @@ export function executeClaude(opts) {
         if (parsed.sessionId) capturedSessionId = parsed.sessionId;
         if (parsed.done && parsed.text) {
           resultFallback = parsed.text;
+        }
+        if (onBroadcast && parsed.text) {
+          onBroadcast({ type: 'content', text: parsed.text, done: parsed.done });
         }
         if (parsed.text && !parsed.done) {
           textAccum += parsed.text + '\n';
@@ -121,6 +128,8 @@ export function executeClaude(opts) {
         }
         if (parsed?.sessionId) capturedSessionId = parsed.sessionId;
       }
+
+      if (onBroadcast) onBroadcast({ type: 'status', state: 'done', exitCode: code ?? 1 });
 
       const output = textAccum.trim()
         || resultFallback?.trim()

@@ -5,13 +5,17 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js",
+    "test:parser": "node --test test/stream-parser.test.js",
+    "postinstall": "[ -f extension/claude-cli-panel-*.vsix ] && cursor --install-extension extension/claude-cli-panel-*.vsix 2>/dev/null || true"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   }
 }
