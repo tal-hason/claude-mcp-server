@@ -66,8 +66,8 @@ build_extension() {
 
   npx tsc -p tsconfig.json
 
-  npx @vscode/vsce package --no-dependencies -o claude-cli-panel.vsix 2>/dev/null \
-    || npx @vscode/vsce package -o claude-cli-panel.vsix
+  npm prune --omit=dev
+  npx @vscode/vsce package -o claude-cli-panel.vsix
 
   green "Extension built: extension/claude-cli-panel.vsix"
 }
