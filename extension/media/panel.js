@@ -48,7 +48,6 @@
     header.className = 'task-header';
 
     const badge = document.createElement('span');
-    const modeClass = ['architect','planner','reviewer','explorer','executor'].includes(mode) ? mode : 'default';
     badge.className = `badge ${modeClass}`;
     badge.textContent = mode || 'prompt';
     header.appendChild(badge);

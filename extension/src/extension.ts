@@ -10,7 +10,10 @@ import * as vscode from 'vscode';
 import WebSocket from 'ws';
 import * as crypto from 'crypto';
 
-const WS_URL = 'ws://127.0.0.1:3456';
+function getWsUrl(): string {
+  const port = vscode.workspace.getConfiguration('claudeCli').get<number>('wsPort', 3456);
+  return `ws://127.0.0.1:${port}`;
+}
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 
@@ -62,7 +65,7 @@ function createOrShowPanel(context: vscode.ExtensionContext) {
 function connectWS() {
   disconnectWS();
 
-  _ws = new WebSocket(WS_URL);
+  _ws = new WebSocket(getWsUrl());
 
   _ws.on('open', () => {
     _reconnectDelay = RECONNECT_BASE_MS;

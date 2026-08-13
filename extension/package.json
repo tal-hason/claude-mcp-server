@@ -16,7 +16,17 @@
         "command": "claudeCli.showPanel",
         "title": "Claude CLI: Show Panel"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Claude CLI",
+      "properties": {
+        "claudeCli.wsPort": {
+          "type": "number",
+          "default": 3456,
+          "description": "WebSocket bridge port (must match WS_BRIDGE_PORT env var on the MCP server)"
+        }
+      }
+    }
   },
   "dependencies": {
     "ws": "^8.0.0"

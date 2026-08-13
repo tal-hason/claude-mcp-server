@@ -17,8 +17,13 @@ import { startWSBridge, broadcast, stopWSBridge } from './ws-bridge.js';
 
 startWSBridge();
 
-process.on('SIGTERM', () => { killActive(); stopWSBridge(); process.exit(0); });
-process.on('SIGINT', () => { killActive(); stopWSBridge(); process.exit(0); });
+function shutdown() {
+  killActive();
+  stopWSBridge();
+  setTimeout(() => process.exit(0), 6000);
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 serveStdio(() => {
   const server = new McpServer(
