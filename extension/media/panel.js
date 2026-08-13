@@ -26,6 +26,15 @@
   function hideEmpty() { if (emptyState) emptyState.style.display = 'none'; }
   function showEmpty() { if (emptyState && tasks.size === 0) emptyState.style.display = ''; }
 
+  function clearCompleted() {
+    for (const [id, t] of tasks) {
+      if (t.card.classList.contains('completed')) {
+        t.card.remove();
+        tasks.delete(id);
+      }
+    }
+  }
+
   function setStatus(state) {
     statusDot.className = 'status-dot';
     switch (state) {
@@ -115,6 +124,7 @@
       case 'status': {
         const id = msg.taskId || 'default';
         if (msg.state === 'running') {
+          clearCompleted();
           createTaskCard(id, msg.mode);
           setStatus('running');
         } else if (msg.state === 'done') {
