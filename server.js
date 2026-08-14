@@ -88,7 +88,7 @@ server.tool(
     // --- ACTION: dispatch (fire-and-forget) ---
     if (action === 'dispatch') {
       try {
-        const dispatchId = dispatchClaude({
+        const { dispatchId, resultPath } = dispatchClaude({
           prompt, model, effort: effectiveEffort, systemPrompt,
           appendSystemPrompt, sessionId, cwd,
           onBroadcast: makeBroadcast,
@@ -97,8 +97,8 @@ server.tool(
           content: [{
             type: 'text',
             text: JSON.stringify({
-              dispatchId, status: 'running',
-              message: 'Agent dispatched. Call again with action "result" and this dispatchId to collect output.',
+              dispatchId, resultPath, status: 'running',
+              message: `Agent dispatched. Result will be written to ${resultPath} when done. Read that file to collect output, or call again with action "result" and this dispatchId.`,
             }),
           }],
         };

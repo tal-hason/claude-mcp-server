@@ -25,6 +25,8 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { writeFile, mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { parseStreamLine } from './stream-parser.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 min — deep reviewer/architect audits with many file reads need headroom
@@ -187,9 +189,10 @@ export function executeClaude(opts) {
   });
 }
 
-/** Async dispatch store: taskId → { result, progressTail, startedAt } */
+/** Async dispatch store: dispatchId → { result, resultPath, progressTail, startedAt } */
 const _dispatched = new Map();
 const PROGRESS_TAIL_BYTES = 4000;
+const DISPATCH_DIR = join(process.env.HOME || '/tmp', '.cursor', 'claude-dispatch');
 
 /**
  * Fire-and-forget dispatch. Spawns the CLI and returns a dispatchId immediately.
@@ -202,7 +205,8 @@ const PROGRESS_TAIL_BYTES = 4000;
  */
 export function dispatchClaude(opts) {
   const dispatchId = randomUUID().slice(0, 8);
-  const entry = { result: null, progressTail: '', startedAt: Date.now() };
+  const resultPath = join(DISPATCH_DIR, `${dispatchId}.json`);
+  const entry = { result: null, resultPath, progressTail: '', startedAt: Date.now() };
   _dispatched.set(dispatchId, entry);
 
   const callerBroadcast = opts.onBroadcast;
@@ -216,20 +220,37 @@ export function dispatchClaude(opts) {
     if (callerBroadcast) callerBroadcast({ ...data, dispatchId });
   };
 
+  async function writeResult(result) {
+    entry.result = result;
+    try {
+      await mkdir(DISPATCH_DIR, { recursive: true });
+      await writeFile(resultPath, JSON.stringify({
+        dispatchId,
+        status: 'done',
+        elapsedMs: Date.now() - entry.startedAt,
+        output: result.output,
+        sessionId: result.sessionId,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+      }, null, 2));
+    } catch (err) {
+      process.stderr.write(`[dispatch] Failed to write result to ${resultPath}: ${err.message}\n`);
+    }
+    if (callerBroadcast) callerBroadcast({ type: 'dispatch-done', dispatchId, resultPath });
+  }
+
   executeClaude({
     ...opts,
     timeoutMs: DISPATCH_TIMEOUT_MS,
     onBroadcast: wrappedBroadcast,
   })
-    .then((result) => { entry.result = result; })
-    .catch((err) => {
-      entry.result = {
-        output: `Error: ${err.message}`, sessionId: null,
-        exitCode: 1, timedOut: false, taskId: dispatchId,
-      };
-    });
+    .then((result) => writeResult(result))
+    .catch((err) => writeResult({
+      output: `Error: ${err.message}`, sessionId: null,
+      exitCode: 1, timedOut: false, taskId: dispatchId,
+    }));
 
-  return dispatchId;
+  return { dispatchId, resultPath };
 }
 
 /**
@@ -249,6 +270,7 @@ export function getDispatchResult(taskId) {
     return {
       status: 'done',
       elapsedMs,
+      resultPath: entry.resultPath,
       output: entry.result.output,
       sessionId: entry.result.sessionId,
       exitCode: entry.result.exitCode,
@@ -259,6 +281,7 @@ export function getDispatchResult(taskId) {
   return {
     status: 'running',
     elapsedMs,
+    resultPath: entry.resultPath,
     progressTail: entry.progressTail.slice(-PROGRESS_TAIL_BYTES),
   };
 }
