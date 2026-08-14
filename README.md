@@ -40,29 +40,27 @@ cursor --uninstall-extension thason.claude-cli-panel
 
 ## Usage
 
-Single tool: `claude_prompt` with three actions via the `action` parameter.
+Single tool: `claude_prompt`.
 
-### Sync (default, quick tasks)
+### Quick tasks (direct call)
 
 ```
 claude_prompt({ prompt: "Review this code", mode: "reviewer" })
 ```
 
-### Async (long-running tasks)
+### Long-running tasks (background Task wrapper)
+
+For reviewer/architect audits that can run 15-30+ minutes, wrap the call in a Cursor background Task. Cursor handles notification delivery automatically — no polling, no custom async machinery.
 
 ```
-// 1. Dispatch — returns immediately with a dispatchId
-claude_prompt({ action: "dispatch", prompt: "Deep review of the entire repo", mode: "reviewer", model: "claude-opus-4-8" })
-// → { dispatchId: "a1b2c3d4", status: "running" }
-
-// 2. Continue your own work...
-
-// 3. Poll for result when ready
-claude_prompt({ action: "result", dispatchId: "a1b2c3d4" })
-// → { status: "done", output: "...", sessionId: "...", elapsedMs: 847000 }
+Task({
+  subagent_type: "generalPurpose",
+  run_in_background: true,
+  prompt: "Call claude_prompt with mode reviewer, model claude-opus-4-8, prompt: <full review prompt>"
+})
+// → Parent agent continues working
+// → Cursor notifies when the subagent completes with the full result
 ```
-
-Use `action: "dispatch"` for reviewer/architect audits on large codebases that can run 15-30+ minutes. The CLI runs in background with a 1-hour ceiling — no tool-call timeout pressure.
 
 ### Modes
 
@@ -80,16 +78,14 @@ Without `mode`, the tool passes through raw (caller controls everything).
 
 | Param | Required | Description |
 |---|---|---|
-| `action` | No | `"prompt"` (default, sync), `"dispatch"` (async fire-and-forget), `"result"` (poll) |
-| `prompt` | Yes* | The prompt to send (*not needed for `action: "result"`) |
+| `prompt` | Yes | The prompt to send |
 | `mode` | No | Dispatch mode (see table above) |
-| `model` | No | Exact model name (e.g. `claude-sonnet-5`) |
+| `model` | No | Exact model name (e.g. `claude-opus-4-8`) |
 | `effort` | No | `low` / `medium` / `high` / `xhigh` / `max` |
 | `systemPrompt` | No | System prompt override |
 | `sessionId` | No | Resume a previous session |
 | `cwd` | No | Working directory for Claude CLI |
-| `timeoutMs` | No | Max execution time in ms (sync only). Default `600000` (10 min). Dispatch uses a 1-hour ceiling |
-| `dispatchId` | No | For `action: "result"`: the dispatchId from a prior dispatch call |
+| `timeoutMs` | No | Max execution time in ms. Default `600000` (10 min). For long tasks, use a background Task wrapper instead of raising this |
 
 ## How it works
 

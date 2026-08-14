@@ -18,19 +18,12 @@
 //     attribute the kill and surface a [TIMEOUT] marker in output instead of silently returning
 //     partial/empty text. Reviewer/architect modes reading many large files can legitimately exceed
 //     the default — callers should pass a larger `timeoutMs`, not assume 5 min is universal.
-// 12. [Pattern]: Async dispatch via dispatchClaude/getDispatchResult — fire-and-forget for long-running
-//     tasks (20+ min reviewer/architect audits). dispatchClaude returns a taskId immediately; the CLI
-//     runs in background with no tool-call timeout pressure. getDispatchResult polls by taskId,
-//     returning { status: 'running', progressTail } or { status: 'done', ...fullResult }.
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { parseStreamLine } from './stream-parser.js';
 
 const DEFAULT_TIMEOUT_MS = 600_000; // 10 min — deep reviewer/architect audits with many file reads need headroom
-const DISPATCH_TIMEOUT_MS = 3_600_000; // 1 hour — async dispatch ceiling (sync callers still use DEFAULT_TIMEOUT_MS)
 const PROGRESS_DEBOUNCE_MS = 500;
 const SIGKILL_DELAY_MS = 5_000;
 const MAX_CONCURRENT = 5;
@@ -187,116 +180,6 @@ export function executeClaude(opts) {
       reject(new Error(`Failed to spawn ${CLAUDE_BIN}: ${err.message}`));
     });
   });
-}
-
-/** Async dispatch store: dispatchId → { result, resultPath, progressTail, startedAt } */
-const _dispatched = new Map();
-const PROGRESS_TAIL_BYTES = 4000;
-const DISPATCH_DIR = join(process.env.HOME || '/tmp', '.cursor', 'claude-dispatch');
-
-/**
- * Fire-and-forget dispatch. Spawns the CLI and returns a dispatchId immediately.
- * The process runs in background with a generous timeout (DISPATCH_TIMEOUT_MS).
- * Poll via getDispatchResult(dispatchId) to retrieve the output when ready.
- *
- * @param {object} opts - same as executeClaude, minus timeoutMs (uses DISPATCH_TIMEOUT_MS)
- * @param {(data: object) => void} [opts.onBroadcast]
- * @returns {string} dispatchId
- */
-export function dispatchClaude(opts) {
-  const dispatchId = randomUUID().slice(0, 8);
-  const resultPath = join(DISPATCH_DIR, `${dispatchId}.json`);
-  const entry = { result: null, resultPath, progressTail: '', startedAt: Date.now() };
-  _dispatched.set(dispatchId, entry);
-
-  const callerBroadcast = opts.onBroadcast;
-  const wrappedBroadcast = (data) => {
-    if (data.type === 'content' && data.text) {
-      entry.progressTail += data.text + '\n';
-      if (entry.progressTail.length > PROGRESS_TAIL_BYTES * 2) {
-        entry.progressTail = entry.progressTail.slice(-PROGRESS_TAIL_BYTES);
-      }
-    }
-    if (callerBroadcast) callerBroadcast({ ...data, dispatchId });
-  };
-
-  async function writeResult(result) {
-    entry.result = result;
-    try {
-      await mkdir(DISPATCH_DIR, { recursive: true });
-      await writeFile(resultPath, JSON.stringify({
-        dispatchId,
-        status: 'done',
-        elapsedMs: Date.now() - entry.startedAt,
-        output: result.output,
-        sessionId: result.sessionId,
-        exitCode: result.exitCode,
-        timedOut: result.timedOut,
-      }, null, 2));
-    } catch (err) {
-      process.stderr.write(`[dispatch] Failed to write result to ${resultPath}: ${err.message}\n`);
-    }
-    if (callerBroadcast) callerBroadcast({ type: 'dispatch-done', dispatchId, resultPath });
-  }
-
-  executeClaude({
-    ...opts,
-    timeoutMs: DISPATCH_TIMEOUT_MS,
-    onBroadcast: wrappedBroadcast,
-  })
-    .then((result) => writeResult(result))
-    .catch((err) => writeResult({
-      output: `Error: ${err.message}`, sessionId: null,
-      exitCode: 1, timedOut: false, taskId: dispatchId,
-    }));
-
-  return { dispatchId, resultPath };
-}
-
-/**
- * Poll for the result of a dispatched task.
- *
- * @param {string} taskId - from dispatchClaude
- * @returns {{ status: 'running'|'done'|'not_found', elapsedMs?: number, progressTail?: string, output?: string, sessionId?: string, exitCode?: number, timedOut?: boolean }}
- */
-export function getDispatchResult(taskId) {
-  const entry = _dispatched.get(taskId);
-  if (!entry) return { status: 'not_found' };
-
-  const elapsedMs = Date.now() - entry.startedAt;
-
-  if (entry.result) {
-    _dispatched.delete(taskId);
-    return {
-      status: 'done',
-      elapsedMs,
-      resultPath: entry.resultPath,
-      output: entry.result.output,
-      sessionId: entry.result.sessionId,
-      exitCode: entry.result.exitCode,
-      timedOut: entry.result.timedOut,
-    };
-  }
-
-  return {
-    status: 'running',
-    elapsedMs,
-    resultPath: entry.resultPath,
-    progressTail: entry.progressTail.slice(-PROGRESS_TAIL_BYTES),
-  };
-}
-
-/** List all dispatched tasks and their statuses. */
-export function listDispatched() {
-  const tasks = [];
-  for (const [id, entry] of _dispatched) {
-    tasks.push({
-      taskId: id,
-      status: entry.result ? 'done' : 'running',
-      elapsedMs: Date.now() - entry.startedAt,
-    });
-  }
-  return tasks;
 }
 
 /** Kill all active child processes (for cleanup on server shutdown). */

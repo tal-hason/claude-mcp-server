@@ -76,18 +76,6 @@ function connectWS() {
     try {
       const msg = JSON.parse(data.toString());
       postToPanel(msg);
-
-      if (msg.type === 'dispatch-done' && msg.dispatchId) {
-        const resultPath = msg.resultPath || '~/.cursor/claude-dispatch/' + msg.dispatchId + '.json';
-        vscode.window.showInformationMessage(
-          `Claude CLI dispatch ${msg.dispatchId} completed. Result: ${resultPath}`,
-          'Copy Path',
-        ).then((action) => {
-          if (action === 'Copy Path') {
-            vscode.env.clipboard.writeText(resultPath);
-          }
-        });
-      }
     } catch { /* malformed — ignore */ }
   });
 
