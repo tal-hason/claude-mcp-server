@@ -40,11 +40,29 @@ cursor --uninstall-extension thason.claude-cli-panel
 
 ## Usage
 
-Single tool: `claude_prompt` with an optional `mode` parameter.
+Three tools: `claude_prompt` (synchronous), `claude_dispatch` + `claude_result` (async fire-and-forget).
+
+### Sync (quick tasks)
 
 ```
 claude_prompt({ prompt: "Review this code", mode: "reviewer" })
 ```
+
+### Async (long-running tasks)
+
+```
+// 1. Dispatch — returns immediately with a dispatchId
+claude_dispatch({ prompt: "Deep architecture review of the entire repo", mode: "reviewer", model: "claude-opus-4-8" })
+// → { dispatchId: "a1b2c3d4", status: "running" }
+
+// 2. Continue your own work...
+
+// 3. Poll for result when ready
+claude_result({ dispatchId: "a1b2c3d4" })
+// → { status: "done", output: "...", sessionId: "...", elapsedMs: 847000 }
+```
+
+Use `claude_dispatch` for reviewer/architect audits on large codebases that can run 15-30+ minutes. The CLI runs in background with a 1-hour ceiling — no tool-call timeout pressure.
 
 ### Modes
 
