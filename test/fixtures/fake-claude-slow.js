@@ -7,7 +7,7 @@
 process.on('SIGTERM', () => process.exit(1));
 
 process.stdout.write(JSON.stringify({
-  type: 'system', subtype: 'init', session_id: 'slow-session', tools: [], model: 'claude-opus-4-6',
+  type: 'system', subtype: 'init', session_id: 'slow-session', tools: [], model: 'claude-opus-4-8',
 }) + '\n');
 
 setInterval(() => {}, 1000);
