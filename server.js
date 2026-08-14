@@ -1,7 +1,8 @@
 // claude-mcp-server/server.js
 // @ai-rules:
 // 1. [Pattern]: MCP stdio server wrapping Claude CLI. Cursor spawns this as a child process.
-// 2. [Pattern]: serveStdio factory → McpServer with claude_prompt (sync), claude_dispatch + claude_result (async).
+// 2. [Pattern]: Single tool (claude_prompt) with action param: "prompt" (sync), "dispatch" (async), "result" (poll).
+//    Cursor's MCP client only discovers 1 tool per stdio server — folding actions into one tool works around this.
 // 3. [Pattern]: When mode is set, merge mode defaults (effort, appendSystemPrompt). Caller overrides win.
 // 4. [Constraint]: Import only from @modelcontextprotocol/server, zod/v4, and local modules.
 // 5. [Constraint]: All stderr logging — stdout is the MCP JSON-RPC transport.
@@ -30,7 +31,7 @@ process.on('SIGINT', shutdown);
 
 serveStdio(() => {
   const server = new McpServer(
-    { name: 'claude-cli', version: '0.2.0' },
+    { name: 'claude-cli', version: '0.3.0' },
     {
       capabilities: { tools: {} },
       instructions: [
@@ -66,20 +67,15 @@ serveStdio(() => {
         'it remembers everything from the previous turn. Use this for multi-step delegation,',
         'not for one-shot queries.',
         '',
-        'SYNC vs ASYNC — choosing the right tool:',
-        'claude_prompt is synchronous — your tool call blocks until the CLI finishes. Fine for',
-        'explorer (fast, low effort) and focused reviews. But a deep reviewer/architect audit',
-        'reading many large files under max effort can take 15-30+ minutes, which risks timeout.',
+        'SYNC vs ASYNC (the action parameter):',
+        'action "prompt" (default) is synchronous — your tool call blocks until the CLI finishes.',
+        'Fine for explorer (fast, low effort) and focused reviews.',
         '',
-        'For long-running work, use the async pair instead:',
-        '1. claude_dispatch — same params as claude_prompt, but returns a dispatchId immediately.',
-        '   The CLI runs in background with a 1-hour ceiling. Your tool call is not blocked.',
-        '2. claude_result — pass the dispatchId to check status. Returns { status: "running", progressTail }',
-        '   if still working, or { status: "done", output, sessionId, ... } when finished.',
-        '',
-        'Pattern: dispatch all your long-running workers, continue your own work, then collect',
-        'results with claude_result when you are ready to merge. If a task is still running, wait',
-        'and check again — do not abandon dispatched work just because the first poll returns "running".',
+        'For long-running work (reviewer/architect with max effort on large codebases, 15-30+ min):',
+        '1. Call with action "dispatch" — same params, returns a dispatchId immediately. Not blocked.',
+        '2. Continue your own work.',
+        '3. Call with action "result" + the dispatchId — returns progress if still running, or full output when done.',
+        'If "result" returns status "running", wait and try again — do not abandon dispatched work.',
       ].join('\n'),
     },
   );
@@ -88,26 +84,74 @@ serveStdio(() => {
     'claude_prompt',
     {
       description: [
-        'Send a prompt to Claude CLI and get a response.',
-        'Uses the locally installed claude CLI with your existing auth and ~/.claude/CLAUDE.md context.',
-        'Optional mode param applies role-specific defaults (effort + system prompt).',
-        'Supports model selection, effort level, system prompts, and session resume.',
+        'Send a prompt to Claude CLI. Three actions:',
+        '"prompt" (default) — synchronous, blocks until done.',
+        '"dispatch" — fire-and-forget, returns dispatchId immediately (for long 15-30 min tasks).',
+        '"result" — poll a dispatched task by dispatchId.',
       ].join(' '),
       inputSchema: z.object({
-        prompt: z.string().describe('The prompt to send to Claude'),
-        mode: z.enum(MODE_NAMES).optional().describe('Dispatch mode: architect, planner, reviewer, explorer, executor. Applies role-specific effort and system prompt defaults.'),
-        model: z.string().optional().describe('Exact model name (e.g. claude-sonnet-5). Defaults to CLI default.'),
+        action: z.enum(['prompt', 'dispatch', 'result']).optional().describe('Action type. "prompt" (default): sync call. "dispatch": fire-and-forget, returns dispatchId. "result": poll a dispatched task.'),
+        prompt: z.string().optional().describe('The prompt to send (required for "prompt" and "dispatch" actions)'),
+        mode: z.enum(MODE_NAMES).optional().describe('Dispatch mode: architect, planner, reviewer, explorer, executor.'),
+        model: z.string().optional().describe('Exact model name (e.g. claude-opus-4-8). Defaults to CLI default.'),
         effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort level. Mode default used if not provided.'),
-        systemPrompt: z.string().optional().describe('System prompt override (--system-prompt). Independent of mode appendSystemPrompt.'),
+        systemPrompt: z.string().optional().describe('System prompt override (--system-prompt).'),
         sessionId: z.string().optional().describe('Resume a previous session by ID'),
         cwd: z.string().optional().describe('Working directory for Claude CLI'),
-        timeoutMs: z.number().int().positive().optional().describe('Max execution time in ms before the process is killed. Default 600000 (10 min). Increase for large file reads, high/max effort, or big diffs — a timed-out call returns a [TIMEOUT] marker instead of throwing.'),
+        timeoutMs: z.number().int().positive().optional().describe('Max execution time in ms (sync only). Default 600000 (10 min). Dispatch action uses a 1-hour ceiling instead.'),
+        dispatchId: z.string().optional().describe('For action "result": the dispatchId returned by a prior "dispatch" call.'),
       }),
     },
-    async ({ prompt, mode, model, effort, systemPrompt, sessionId, cwd, timeoutMs }, ctx) => {
+    async (params, ctx) => {
+      const action = params.action || 'prompt';
+
+      // --- ACTION: result (poll a dispatched task) ---
+      if (action === 'result') {
+        if (!params.dispatchId) {
+          return { content: [{ type: 'text', text: 'Error: dispatchId is required for action "result"' }], isError: true };
+        }
+        const result = getDispatchResult(params.dispatchId);
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
+
+      // --- Shared setup for prompt / dispatch ---
+      const { prompt, mode, model, effort, systemPrompt, sessionId, cwd, timeoutMs } = params;
+      if (!prompt) {
+        return { content: [{ type: 'text', text: 'Error: prompt is required for action "prompt" or "dispatch"' }], isError: true };
+      }
+
+      const modeConfig = mode ? MODES[mode] : null;
+      const effectiveEffort = effort || modeConfig?.effort;
+      const appendSystemPrompt = modeConfig?.appendSystemPrompt;
+      const makeBroadcast = (data) => {
+        broadcast({ ...data, mode: mode || null, model: data.model || model || null });
+      };
+
+      // --- ACTION: dispatch (fire-and-forget) ---
+      if (action === 'dispatch') {
+        try {
+          const dispatchId = dispatchClaude({
+            prompt, model, effort: effectiveEffort, systemPrompt,
+            appendSystemPrompt, sessionId, cwd,
+            onBroadcast: makeBroadcast,
+          });
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                dispatchId, status: 'running',
+                message: 'Agent dispatched. Call again with action "result" and this dispatchId to collect output.',
+              }),
+            }],
+          };
+        } catch (err) {
+          return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+        }
+      }
+
+      // --- ACTION: prompt (synchronous, default) ---
       const progressToken = ctx.mcpReq._meta?.progressToken;
       let progressCount = 0;
-
       const notifyProgress = async (message) => {
         if (progressToken === undefined) return;
         progressCount++;
@@ -119,10 +163,6 @@ serveStdio(() => {
         } catch { /* non-fatal */ }
       };
 
-      const modeConfig = mode ? MODES[mode] : null;
-      const effectiveEffort = effort || modeConfig?.effort;
-      const appendSystemPrompt = modeConfig?.appendSystemPrompt;
-
       await notifyProgress(mode ? `[${mode}] Starting Claude CLI...` : 'Starting Claude CLI...');
 
       try {
@@ -130,11 +170,7 @@ serveStdio(() => {
           prompt, model, effort: effectiveEffort, systemPrompt,
           appendSystemPrompt, sessionId, cwd, timeoutMs,
           onProgress: (msg) => { notifyProgress(msg); },
-          onBroadcast: (data) => {
-            // data.model (resolved from CLI stream) takes priority over the caller-supplied
-            // model opt, which is usually undefined since modes don't pin models by design.
-            broadcast({ ...data, mode: mode || null, model: data.model || model || null });
-          },
+          onBroadcast: makeBroadcast,
         });
 
         const parts = [result.output];
@@ -145,69 +181,6 @@ serveStdio(() => {
       } catch (err) {
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }
-    },
-  );
-
-  server.registerTool(
-    'claude_dispatch',
-    {
-      description: [
-        'Fire-and-forget: spawn a Claude CLI agent and return a dispatchId immediately.',
-        'The agent runs in background (up to 1 hour) with no tool-call timeout pressure.',
-        'Use for long-running reviewer/architect audits on large codebases.',
-        'Poll claude_result with the returned dispatchId to collect the output when ready.',
-      ].join(' '),
-      inputSchema: z.object({
-        prompt: z.string().describe('The prompt to send to Claude'),
-        mode: z.enum(MODE_NAMES).optional().describe('Dispatch mode: architect, planner, reviewer, explorer, executor.'),
-        model: z.string().optional().describe('Exact model name (e.g. claude-opus-4-8). Defaults to CLI default.'),
-        effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort level.'),
-        systemPrompt: z.string().optional().describe('System prompt override.'),
-        sessionId: z.string().optional().describe('Resume a previous session by ID'),
-        cwd: z.string().optional().describe('Working directory for Claude CLI'),
-      }),
-    },
-    async ({ prompt, mode, model, effort, systemPrompt, sessionId, cwd }) => {
-      const modeConfig = mode ? MODES[mode] : null;
-      const effectiveEffort = effort || modeConfig?.effort;
-      const appendSystemPrompt = modeConfig?.appendSystemPrompt;
-
-      try {
-        const dispatchId = dispatchClaude({
-          prompt, model, effort: effectiveEffort, systemPrompt,
-          appendSystemPrompt, sessionId, cwd,
-          onBroadcast: (data) => {
-            broadcast({ ...data, mode: mode || null, model: data.model || model || null });
-          },
-        });
-
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ dispatchId, status: 'running', message: 'Agent dispatched. Poll claude_result to collect output.' }),
-          }],
-        };
-      } catch (err) {
-        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
-      }
-    },
-  );
-
-  server.registerTool(
-    'claude_result',
-    {
-      description: [
-        'Poll for the result of a dispatched Claude CLI agent.',
-        'Returns status "running" with a progress tail if still working,',
-        '"done" with the full output when finished, or "not_found" if the dispatchId is invalid.',
-      ].join(' '),
-      inputSchema: z.object({
-        dispatchId: z.string().describe('The dispatchId returned by claude_dispatch'),
-      }),
-    },
-    async ({ dispatchId }) => {
-      const result = getDispatchResult(dispatchId);
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     },
   );
 

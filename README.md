@@ -40,9 +40,9 @@ cursor --uninstall-extension thason.claude-cli-panel
 
 ## Usage
 
-Three tools: `claude_prompt` (synchronous), `claude_dispatch` + `claude_result` (async fire-and-forget).
+Single tool: `claude_prompt` with three actions via the `action` parameter.
 
-### Sync (quick tasks)
+### Sync (default, quick tasks)
 
 ```
 claude_prompt({ prompt: "Review this code", mode: "reviewer" })
@@ -52,17 +52,17 @@ claude_prompt({ prompt: "Review this code", mode: "reviewer" })
 
 ```
 // 1. Dispatch — returns immediately with a dispatchId
-claude_dispatch({ prompt: "Deep architecture review of the entire repo", mode: "reviewer", model: "claude-opus-4-8" })
+claude_prompt({ action: "dispatch", prompt: "Deep review of the entire repo", mode: "reviewer", model: "claude-opus-4-8" })
 // → { dispatchId: "a1b2c3d4", status: "running" }
 
 // 2. Continue your own work...
 
 // 3. Poll for result when ready
-claude_result({ dispatchId: "a1b2c3d4" })
+claude_prompt({ action: "result", dispatchId: "a1b2c3d4" })
 // → { status: "done", output: "...", sessionId: "...", elapsedMs: 847000 }
 ```
 
-Use `claude_dispatch` for reviewer/architect audits on large codebases that can run 15-30+ minutes. The CLI runs in background with a 1-hour ceiling — no tool-call timeout pressure.
+Use `action: "dispatch"` for reviewer/architect audits on large codebases that can run 15-30+ minutes. The CLI runs in background with a 1-hour ceiling — no tool-call timeout pressure.
 
 ### Modes
 
@@ -80,14 +80,16 @@ Without `mode`, the tool passes through raw (caller controls everything).
 
 | Param | Required | Description |
 |---|---|---|
-| `prompt` | Yes | The prompt to send |
+| `action` | No | `"prompt"` (default, sync), `"dispatch"` (async fire-and-forget), `"result"` (poll) |
+| `prompt` | Yes* | The prompt to send (*not needed for `action: "result"`) |
 | `mode` | No | Dispatch mode (see table above) |
 | `model` | No | Exact model name (e.g. `claude-sonnet-5`) |
 | `effort` | No | `low` / `medium` / `high` / `xhigh` / `max` |
 | `systemPrompt` | No | System prompt override |
 | `sessionId` | No | Resume a previous session |
 | `cwd` | No | Working directory for Claude CLI |
-| `timeoutMs` | No | Max execution time before the process is killed. Default `600000` (10 min). Increase for large file reads or high/max effort reviews — a timed-out call returns a `[TIMEOUT]` marker instead of throwing |
+| `timeoutMs` | No | Max execution time in ms (sync only). Default `600000` (10 min). Dispatch uses a 1-hour ceiling |
+| `dispatchId` | No | For `action: "result"`: the dispatchId from a prior dispatch call |
 
 ## How it works
 
