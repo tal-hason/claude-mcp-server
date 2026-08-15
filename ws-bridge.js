@@ -40,6 +40,10 @@ export function startWSBridge() {
         server: httpServer,
         verifyClient: ({ req }) => !req.headers.origin,
       });
+      wss.on('connection', (ws) => {
+        ws.on('error', () => {});
+      });
+      wss.on('error', () => {});
       _wss = wss;
       _httpServer = httpServer;
       process.stderr.write(`[ws-bridge] Listening on 127.0.0.1:${port}\n`);
@@ -54,7 +58,7 @@ export function broadcast(data) {
   const payload = typeof data === 'string' ? data : JSON.stringify(data);
   for (const client of _wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
+      client.send(payload, (err) => { if (err) { /* client gone — noop */ } });
     }
   }
 }

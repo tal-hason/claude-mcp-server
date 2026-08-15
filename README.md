@@ -89,10 +89,10 @@ Without `mode`, the tool passes through raw (caller controls everything).
 
 ## How it works
 
-1. Cursor calls the MCP tool via stdio
+1. Cursor calls the MCP tool via stdio (SDK v1.x, `StdioServerTransport`)
 2. The server resolves mode defaults (effort, appended system prompt)
-3. Spawns `claude --print --output-format stream-json` with the resolved args
-4. Parses streaming output, sends MCP progress notifications
+3. Spawns `claude --print --output-format stream-json`, feeds prompt via stdin
+4. Parses streaming output, broadcasts to the VS Code extension panel via WebSocket
 5. Returns the final text result + session ID
 
 Claude CLI reads `~/.claude/CLAUDE.md` as global context regardless of `cwd`. Mode system prompts are **appended** (via `--append-system-prompt`), never replacing CLAUDE.md.
@@ -101,7 +101,8 @@ Claude CLI reads `~/.claude/CLAUDE.md` as global context regardless of `cwd`. Mo
 
 | File | Purpose |
 |---|---|
-| `server.js` | MCP entry point — serveStdio, tool registration |
+| `server.js` | MCP entry point — `StdioServerTransport`, tool registration |
 | `modes.js` | Dispatch mode definitions (effort + system prompt per role) |
-| `cli-executor.js` | Spawn Claude CLI, parse stream-json, callbacks |
+| `cli-executor.js` | Spawn Claude CLI, parse stream-json, timeout attribution |
 | `stream-parser.js` | Parse individual stream-json lines |
+| `ws-bridge.js` | WebSocket bridge — streams CLI output to the extension panel |

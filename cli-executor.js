@@ -1,6 +1,7 @@
 // claude-mcp-server/cli-executor.js
 // @ai-rules:
-// 1. [Pattern]: Spawns claude CLI with --print --output-format stream-json. Returns { output, sessionId }.
+// 1. [Pattern]: Spawns claude CLI with --print --output-format stream-json. Prompt fed via stdin (not argv)
+//    to avoid E2BIG on large diffs and /proc/cmdline disclosure. Returns { output, sessionId }.
 // 2. [Pattern]: onProgress callback receives parsed stream lines for MCP progress notifications (debounced).
 // 3. [Pattern]: Concurrent pool — up to MAX_CONCURRENT CLI processes tracked by taskId in _children Map.
 // 4. [Pattern]: SIGKILL escalation uses exit-flag (not child.killed which is set on signal send, not death).
@@ -84,13 +85,14 @@ export function executeClaude(opts) {
     if (systemPrompt) args.push('--system-prompt', systemPrompt);
     if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt);
     if (sessionId) args.push('--resume', sessionId);
-    args.push('-p', prompt);
 
     const child = spawn(CLAUDE_BIN, args, {
       cwd: cwd || process.cwd(),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
       env: process.env,
     });
+
+    child.stdin.end(prompt);
 
     _children.set(taskId, child);
     if (onBroadcast) onBroadcast({ type: 'status', state: 'running', taskId });
