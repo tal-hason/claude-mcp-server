@@ -1,117 +1,42 @@
 // claude-mcp-server/server.js
 // @ai-rules:
-// 1. [Pattern]: MCP stdio server wrapping Claude CLI. Cursor spawns this as a child process.
-// 2. [Pattern]: Uses @modelcontextprotocol/sdk v1.x (server.tool API) — Cursor only discovers
-//    tools from this SDK version; v2.0.0's registerTool produces JSON Schema Draft 2020-12 which
-//    Cursor silently drops after the first tool.
-// 3. [Pattern]: Single sync tool (claude_prompt). Long-running calls should be wrapped in a Cursor
-//    background Task (generalPurpose, run_in_background: true) — Cursor's native notification
-//    system handles completion delivery to the right conversation. No custom async dispatch needed.
-// 9. [Pattern]: MCP progress notifications act as a heartbeat — the CLI's streaming output triggers
-//    notifications/progress every ~500ms (debounced in cli-executor), keeping Cursor's MCP transport
-//    alive during long-running reviewer/architect audits that would otherwise hit the ~30s ceiling.
-// 4. [Pattern]: When mode is set, merge mode defaults (effort, appendSystemPrompt). Caller overrides win.
-// 5. [Constraint]: All stderr logging — stdout is the MCP JSON-RPC transport.
-// 6. [Pattern]: SIGTERM/SIGINT → killActive() + stopWSBridge() ensures clean shutdown.
-// 7. [Pattern]: Multiple instances coexist safely — Cursor spawns one per window. Only the first
-//    instance owns port 3456 (WS bridge); others degrade to noop broadcast (no panel streaming but
-//    MCP tool still works). The WS bridge retry logic handles port contention gracefully.
-// 8. [Pattern]: broadcast model field prefers data.model (CLI-resolved) over the caller's model opt.
+// 1. [Pattern]: MCP stdio server — thin wiring layer, delegates to command-builder.js.
+// 2. [Pattern]: Uses @modelcontextprotocol/sdk v1.x (server.tool API).
+// 3. [Pattern]: Single tool (claude_prompt) returns { command, cwd } JSON for the agent to execute via Shell.
+// 4. [Constraint]: All stderr logging — stdout is the MCP JSON-RPC transport.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { executeClaude, killActive } from './cli-executor.js';
-import { MODES, MODE_NAMES } from './modes.js';
-import { startWSBridge, broadcast, stopWSBridge } from './ws-bridge.js';
-
-startWSBridge();
-
-function shutdown() {
-  killActive();
-  stopWSBridge();
-  const t = setTimeout(() => process.exit(0), 6000);
-  t.unref();
-}
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+import { buildCommand, MODE_NAMES } from './command-builder.js';
 
 const server = new McpServer({
   name: 'claude-cli',
-  version: '0.4.0',
+  version: '0.5.0',
   description: [
-    'Claude CLI bridge — a second brain. Spawns an independent Claude process with its own',
-    'context, auth, and reasoning budget. Modes shape how the agent thinks: architect, planner,',
-    'reviewer, explorer, executor. For long-running calls (15-30+ min), wrap in a Cursor',
-    'background Task (generalPurpose, run_in_background: true) — Cursor notifies you when done.',
+    'Claude CLI bridge — builds shell commands with mode defaults resolved.',
+    'Returns a command string for the agent to execute via Cursor Shell tool.',
+    'Modes: architect, planner, reviewer, explorer, executor.',
   ].join(' '),
 });
 
 server.tool(
   'claude_prompt',
   [
-    'Send a prompt to Claude CLI and get a response.',
-    'Uses the locally installed claude CLI with your existing auth and ~/.claude/CLAUDE.md context.',
-    'Optional mode param applies role-specific defaults (effort + system prompt).',
-    'For long-running reviewer/architect audits, wrap this call in a background Task subagent —',
-    'Cursor will notify you when it completes. Do not worry about timeouts when using a Task wrapper.',
+    'Build a Claude CLI command with mode defaults resolved.',
+    'Returns JSON { command, cwd } — execute the command via Cursor Shell tool.',
+    'For long-running tasks, use block_until_ms: 0 to background.',
   ].join(' '),
   {
     prompt: z.string().describe('The prompt to send to Claude'),
     mode: z.enum(MODE_NAMES).optional().describe('Dispatch mode: architect, planner, reviewer, explorer, executor.'),
     model: z.string().optional().describe('Exact model name (e.g. claude-opus-4-8). Defaults to CLI default.'),
-    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort level. Mode default used if not provided.'),
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort level.'),
     systemPrompt: z.string().optional().describe('System prompt override (--system-prompt).'),
     sessionId: z.string().optional().describe('Resume a previous session by ID'),
     cwd: z.string().optional().describe('Working directory for Claude CLI'),
-    timeoutMs: z.number().int().positive().optional().describe('Max execution time in ms. Default 600000 (10 min). Increase for large diffs or wrap in a background Task instead.'),
   },
-  async (params, extra) => {
-    const { prompt, mode, model, effort, systemPrompt, sessionId, cwd, timeoutMs } = params;
-
-    const modeConfig = mode ? MODES[mode] : null;
-    const effectiveEffort = effort || modeConfig?.effort;
-    const appendSystemPrompt = modeConfig?.appendSystemPrompt;
-
-    const progressToken = extra?._meta?.progressToken;
-    let progressCount = 0;
-
-    const sendProgress = progressToken !== undefined ? async (msg) => {
-      progressCount++;
-      try {
-        await extra.sendNotification({
-          method: 'notifications/progress',
-          params: { progressToken, progress: progressCount, message: msg },
-        });
-      } catch {}
-    } : null;
-
-    const heartbeat = sendProgress
-      ? setInterval(() => sendProgress('still working…'), 15_000)
-      : null;
-
-    try {
-      const result = await executeClaude({
-        prompt, model, effort: effectiveEffort, systemPrompt,
-        appendSystemPrompt, sessionId, cwd, timeoutMs,
-        onProgress: sendProgress || undefined,
-        onBroadcast: (data) => {
-          broadcast({ ...data, mode: mode || null, model: data.model || model || null });
-        },
-      });
-
-      if (heartbeat) clearInterval(heartbeat);
-
-      const parts = [result.output];
-      if (result.sessionId) parts.push(`\n---\nSession ID: ${result.sessionId}`);
-      if (result.exitCode !== 0) parts.push(`\n[exit code: ${result.exitCode}]`);
-
-      return { content: [{ type: 'text', text: parts.join('') }] };
-    } catch (err) {
-      if (heartbeat) clearInterval(heartbeat);
-      return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
-    }
-  },
+  async (params) => buildCommand(params),
 );
 
 const transport = new StdioServerTransport();
