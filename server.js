@@ -10,21 +10,49 @@
 // 4. [Pattern]: When mode is set, merge mode defaults (effort, appendSystemPrompt). Caller overrides win.
 // 5. [Constraint]: All stderr logging — stdout is the MCP JSON-RPC transport.
 // 6. [Pattern]: SIGTERM/SIGINT → killActive() + stopWSBridge() ensures clean shutdown.
-// 7. [Pattern]: WS bridge starts at module level (before server.connect) so it's ready before first tool call.
+// 7. [Pattern]: Singleton guard via PID file (~/.cursor/claude-cli-mcp.pid) — kills any previous instance
+//    before starting WS bridge, ensuring only one process ever owns port 3456.
 // 8. [Pattern]: broadcast model field prefers data.model (CLI-resolved) over the caller's model opt.
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { executeClaude, killActive } from './cli-executor.js';
 import { MODES, MODE_NAMES } from './modes.js';
 import { startWSBridge, broadcast, stopWSBridge } from './ws-bridge.js';
 
+const PID_FILE = join(process.env.HOME || '/tmp', '.cursor', 'claude-cli-mcp.pid');
+
+function acquireSingleton() {
+  if (existsSync(PID_FILE)) {
+    const oldPid = parseInt(readFileSync(PID_FILE, 'utf-8').trim(), 10);
+    if (oldPid && oldPid !== process.pid) {
+      try {
+        process.kill(oldPid, 0);
+        process.stderr.write(`[singleton] Killing previous instance (pid ${oldPid})\n`);
+        process.kill(oldPid, 'SIGTERM');
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+          try { process.kill(oldPid, 0); } catch { break; }
+          const wait = Math.min(100, deadline - Date.now());
+          if (wait > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+        }
+        try { process.kill(oldPid, 'SIGKILL'); } catch {}
+      } catch {}
+    }
+  }
+  writeFileSync(PID_FILE, String(process.pid));
+}
+
+acquireSingleton();
 startWSBridge();
 
 function shutdown() {
   killActive();
   stopWSBridge();
+  try { unlinkSync(PID_FILE); } catch {}
   const t = setTimeout(() => process.exit(0), 6000);
   t.unref();
 }
