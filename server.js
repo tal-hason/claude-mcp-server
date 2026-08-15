@@ -76,23 +76,31 @@ server.tool(
     const progressToken = extra?._meta?.progressToken;
     let progressCount = 0;
 
+    const sendProgress = progressToken !== undefined ? async (msg) => {
+      progressCount++;
+      try {
+        await extra.sendNotification({
+          method: 'notifications/progress',
+          params: { progressToken, progress: progressCount, message: msg },
+        });
+      } catch {}
+    } : null;
+
+    const heartbeat = sendProgress
+      ? setInterval(() => sendProgress('still working…'), 15_000)
+      : null;
+
     try {
       const result = await executeClaude({
         prompt, model, effort: effectiveEffort, systemPrompt,
         appendSystemPrompt, sessionId, cwd, timeoutMs,
-        onProgress: progressToken !== undefined ? async (msg) => {
-          progressCount++;
-          try {
-            await extra.sendNotification({
-              method: 'notifications/progress',
-              params: { progressToken, progress: progressCount, message: msg },
-            });
-          } catch {}
-        } : undefined,
+        onProgress: sendProgress || undefined,
         onBroadcast: (data) => {
           broadcast({ ...data, mode: mode || null, model: data.model || model || null });
         },
       });
+
+      if (heartbeat) clearInterval(heartbeat);
 
       const parts = [result.output];
       if (result.sessionId) parts.push(`\n---\nSession ID: ${result.sessionId}`);
@@ -100,6 +108,7 @@ server.tool(
 
       return { content: [{ type: 'text', text: parts.join('') }] };
     } catch (err) {
+      if (heartbeat) clearInterval(heartbeat);
       return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
     }
   },
