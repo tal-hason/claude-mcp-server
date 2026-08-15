@@ -5,7 +5,6 @@
 # 2. [Constraint]: Self-contained — no git clone, no npm build. Downloads pre-built release tarball.
 # 3. [Pattern]: Installs to INSTALL_DIR (default ~/.local/share/claude-mcp-server).
 # 4. [Pattern]: Idempotent MCP registration via jq merge.
-# 5. [Gotcha]: macOS uses BSD tar; Linux uses GNU tar. Both handle .tar.gz the same way.
 
 set -euo pipefail
 
@@ -81,28 +80,6 @@ download_and_extract() {
   green "Installed to ${INSTALL_DIR}"
 }
 
-install_extension() {
-  local vsix="$INSTALL_DIR/extension/claude-cli-panel.vsix"
-
-  if [[ ! -f "$vsix" ]]; then
-    echo "No VSIX found in release — skipping extension install."
-    return
-  fi
-
-  blue "Installing Cursor extension..."
-
-  if command -v cursor >/dev/null 2>&1; then
-    cursor --install-extension "$vsix" 2>/dev/null && green "Extension installed." && return
-  fi
-
-  if command -v code >/dev/null 2>&1; then
-    code --install-extension "$vsix" 2>/dev/null && green "Extension installed (via code)." && return
-  fi
-
-  echo "Neither 'cursor' nor 'code' CLI found. Manually install:"
-  echo "  cursor --install-extension $vsix"
-}
-
 register_mcp() {
   blue "Registering MCP server..."
 
@@ -117,7 +94,7 @@ register_mcp() {
   new_entry=$(jq -n \
     --arg cmd "node" \
     --arg arg "$server_js" \
-    --arg desc "Claude CLI bridge — use Claude as a sub-agent via MCP" \
+    --arg desc "Claude CLI bridge — command builder for Cursor agents" \
     '{ command: $cmd, args: [$arg], description: $desc }')
 
   if jq -e ".mcpServers[\"$SERVER_ENTRY\"]" "$MCP_CONFIG" >/dev/null 2>&1; then
@@ -157,7 +134,6 @@ main() {
   check_deps
   get_latest_release
   download_and_extract
-  install_extension
   register_mcp
 
   echo
@@ -165,15 +141,13 @@ main() {
   echo
   echo "Next steps:"
   echo "  1. Restart Cursor (or reload MCP servers)"
-  echo "  2. Command Palette → 'Claude CLI: Show Panel'"
-  echo "  3. Use claude_prompt from any Cursor chat"
+  echo "  2. Use claude_prompt from any Cursor chat"
   echo
   echo "Installed to: ${INSTALL_DIR}"
   echo
   echo "Uninstall:"
   echo "  rm -rf ${INSTALL_DIR}"
   echo "  jq 'del(.mcpServers[\"claude-cli\"])' ~/.cursor/mcp.json > /tmp/mcp.json && mv /tmp/mcp.json ~/.cursor/mcp.json"
-  echo "  cursor --uninstall-extension thason.claude-cli-panel"
   echo
 }
 

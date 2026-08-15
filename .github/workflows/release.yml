@@ -61,16 +61,8 @@ jobs:
             echo "Auto-bumped: ${LATEST_TAG} → ${TAG}"
           fi
 
-      - name: Install server dependencies
+      - name: Install dependencies
         run: npm ci --no-fund --no-audit
-
-      - name: Build extension
-        working-directory: extension
-        run: |
-          npm ci --no-fund --no-audit
-          npx tsc -p tsconfig.json
-          npm prune --omit=dev
-          npx @vscode/vsce package -o claude-cli-panel.vsix
 
       - name: Create release bundle
         run: |
@@ -78,13 +70,8 @@ jobs:
           BUNDLE_DIR="claude-mcp-server-${VERSION}"
           mkdir -p "$BUNDLE_DIR"
 
-          cp server.js cli-executor.js stream-parser.js modes.js ws-bridge.js \
-             package.json package-lock.json setup.sh "$BUNDLE_DIR/"
-
+          cp server.js command-builder.js modes.js package.json package-lock.json setup.sh "$BUNDLE_DIR/"
           cp -r node_modules "$BUNDLE_DIR/node_modules"
-
-          mkdir -p "$BUNDLE_DIR/extension"
-          cp extension/claude-cli-panel.vsix "$BUNDLE_DIR/extension/"
 
           tar czf "claude-mcp-server-${VERSION}.tar.gz" "$BUNDLE_DIR"
 

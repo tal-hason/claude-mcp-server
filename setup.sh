@@ -4,8 +4,7 @@
 # 1. [Constraint]: Idempotent — safe to run multiple times.
 # 2. [Constraint]: No hardcoded paths — resolves SCRIPT_DIR from $0.
 # 3. [Pattern]: Merges into ~/.cursor/mcp.json without clobbering existing servers.
-# 4. [Pattern]: Builds + installs the VS Code extension VSIX into Cursor.
-# 5. [Gotcha]: jq is required for JSON merge; script fails fast if missing.
+# 4. [Gotcha]: jq is required for JSON merge; script fails fast if missing.
 
 set -euo pipefail
 
@@ -37,10 +36,6 @@ check_deps() {
   fi
 }
 
-is_prebuilt() {
-  [[ -f "$SCRIPT_DIR/extension/claude-cli-panel.vsix" ]] && [[ -d "$SCRIPT_DIR/node_modules" ]]
-}
-
 install_server_deps() {
   if [[ -d "$SCRIPT_DIR/node_modules" ]]; then
     green "Server dependencies already present. Skipping npm install."
@@ -51,46 +46,6 @@ install_server_deps() {
   cd "$SCRIPT_DIR"
   npm install --no-fund --no-audit
   green "Server dependencies installed."
-}
-
-build_extension() {
-  if [[ -f "$SCRIPT_DIR/extension/claude-cli-panel.vsix" ]]; then
-    green "Pre-built VSIX found. Skipping extension build."
-    return
-  fi
-  command -v npm >/dev/null 2>&1 || { red "npm required to build from source."; exit 1; }
-  blue "Building VS Code extension..."
-  cd "$SCRIPT_DIR/extension"
-
-  npm install --no-fund --no-audit
-
-  npx tsc -p tsconfig.json
-
-  npm prune --omit=dev
-  npx @vscode/vsce package -o claude-cli-panel.vsix
-
-  green "Extension built: extension/claude-cli-panel.vsix"
-}
-
-install_extension() {
-  blue "Installing extension into Cursor..."
-  local vsix="$SCRIPT_DIR/extension/claude-cli-panel.vsix"
-
-  if [[ ! -f "$vsix" ]]; then
-    red "VSIX not found at $vsix — build may have failed."
-    exit 1
-  fi
-
-  if command -v cursor >/dev/null 2>&1; then
-    cursor --install-extension "$vsix" 2>/dev/null && green "Extension installed via 'cursor'." && return
-  fi
-
-  if command -v code >/dev/null 2>&1; then
-    code --install-extension "$vsix" 2>/dev/null && green "Extension installed via 'code'." && return
-  fi
-
-  echo "Neither 'cursor' nor 'code' CLI found in PATH."
-  echo "Manually install: cursor --install-extension $vsix"
 }
 
 register_mcp() {
@@ -107,7 +62,7 @@ register_mcp() {
   new_entry=$(jq -n \
     --arg cmd "node" \
     --arg arg "$server_js" \
-    --arg desc "Claude CLI bridge — use Claude as a sub-agent via MCP" \
+    --arg desc "Claude CLI bridge — command builder for Cursor agents" \
     '{
       command: $cmd,
       args: [$arg],
@@ -146,8 +101,6 @@ main() {
 
   check_deps
   install_server_deps
-  build_extension
-  install_extension
   register_mcp
 
   echo
@@ -155,12 +108,10 @@ main() {
   echo
   echo "Next steps:"
   echo "  1. Restart Cursor (or reload MCP servers)"
-  echo "  2. Open Command Palette → 'Claude CLI: Show Panel'"
-  echo "  3. Use the claude_prompt tool from any Cursor chat"
+  echo "  2. Use the claude_prompt tool from any Cursor chat"
   echo
   echo "Uninstall:"
   echo "  jq 'del(.mcpServers[\"claude-cli\"])' ~/.cursor/mcp.json > /tmp/mcp.json && mv /tmp/mcp.json ~/.cursor/mcp.json"
-  echo "  cursor --uninstall-extension thason.claude-cli-panel"
   echo
 }
 

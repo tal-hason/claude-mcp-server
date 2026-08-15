@@ -19,9 +19,3 @@ jobs:
 
       - name: Run tests
         run: npm test
-
-      - name: Typecheck extension
-        working-directory: extension
-        run: |
-          npm ci --no-fund --no-audit
-          npx tsc -p tsconfig.json --noEmit
