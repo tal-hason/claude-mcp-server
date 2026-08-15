@@ -7,6 +7,9 @@
 // 3. [Pattern]: Single sync tool (claude_prompt). Long-running calls should be wrapped in a Cursor
 //    background Task (generalPurpose, run_in_background: true) — Cursor's native notification
 //    system handles completion delivery to the right conversation. No custom async dispatch needed.
+// 9. [Pattern]: MCP progress notifications act as a heartbeat — the CLI's streaming output triggers
+//    notifications/progress every ~500ms (debounced in cli-executor), keeping Cursor's MCP transport
+//    alive during long-running reviewer/architect audits that would otherwise hit the ~30s ceiling.
 // 4. [Pattern]: When mode is set, merge mode defaults (effort, appendSystemPrompt). Caller overrides win.
 // 5. [Constraint]: All stderr logging — stdout is the MCP JSON-RPC transport.
 // 6. [Pattern]: SIGTERM/SIGINT → killActive() + stopWSBridge() ensures clean shutdown.
@@ -63,17 +66,29 @@ server.tool(
     cwd: z.string().optional().describe('Working directory for Claude CLI'),
     timeoutMs: z.number().int().positive().optional().describe('Max execution time in ms. Default 600000 (10 min). Increase for large diffs or wrap in a background Task instead.'),
   },
-  async (params) => {
+  async (params, extra) => {
     const { prompt, mode, model, effort, systemPrompt, sessionId, cwd, timeoutMs } = params;
 
     const modeConfig = mode ? MODES[mode] : null;
     const effectiveEffort = effort || modeConfig?.effort;
     const appendSystemPrompt = modeConfig?.appendSystemPrompt;
 
+    const progressToken = extra?._meta?.progressToken;
+    let progressCount = 0;
+
     try {
       const result = await executeClaude({
         prompt, model, effort: effectiveEffort, systemPrompt,
         appendSystemPrompt, sessionId, cwd, timeoutMs,
+        onProgress: progressToken !== undefined ? async (msg) => {
+          progressCount++;
+          try {
+            await extra.sendNotification({
+              method: 'notifications/progress',
+              params: { progressToken, progress: progressCount, message: msg },
+            });
+          } catch {}
+        } : undefined,
         onBroadcast: (data) => {
           broadcast({ ...data, mode: mode || null, model: data.model || model || null });
         },
