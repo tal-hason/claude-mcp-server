@@ -8,6 +8,27 @@
 
 import { createInterface } from 'node:readline';
 
+const C = {
+  reset: '\x1b[0m',
+  dim:   '\x1b[2m',
+  cyan:  '\x1b[36m',
+  green: '\x1b[32m',
+  yellow:'\x1b[33m',
+  red:   '\x1b[31m',
+  blue:  '\x1b[34m',
+  mag:   '\x1b[35m',
+};
+
+const TOOL_COLOR = {
+  Read:       C.green,
+  Grep:       C.cyan,
+  Glob:       C.cyan,
+  Shell:      C.yellow,
+  Write:      C.red,
+  StrReplace: C.red,
+  Delete:     C.red,
+};
+
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 let resultPrinted = false;
@@ -20,7 +41,7 @@ for await (const line of rl) {
     if (obj.type === 'system' && obj.subtype === 'init') {
       const model = obj.model || 'unknown';
       const sid = obj.session_id || 'n/a';
-      process.stdout.write(`\x1b[2m⚡ model: ${model} | session: ${sid}\x1b[0m\n`);
+      process.stdout.write(`${C.mag}⚡ model: ${model} | session: ${sid}${C.reset}\n`);
       continue;
     }
 
@@ -34,7 +55,8 @@ for await (const line of rl) {
             || block.input?.pattern
             || block.input?.query?.slice(0, 80)
             || '';
-          process.stdout.write(`\x1b[2m⏵ ${block.name}${hint ? `: ${hint}` : ''}\x1b[0m\n`);
+          const tc = TOOL_COLOR[block.name] || C.blue;
+          process.stdout.write(`${C.dim}${tc}⏵ ${block.name}${hint ? `: ${hint}` : ''}${C.reset}\n`);
         }
       }
       continue;
