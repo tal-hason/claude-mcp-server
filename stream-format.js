@@ -31,7 +31,17 @@ const TOOL_COLOR = {
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
-let resultPrinted = false;
+let lastCharWasNewline = true;
+
+function write(s) {
+  if (!s) return;
+  process.stdout.write(s);
+  lastCharWasNewline = s.endsWith('\n');
+}
+
+function ensureNewline() {
+  if (!lastCharWasNewline) write('\n');
+}
 
 for await (const line of rl) {
   if (!line.trim()) continue;
@@ -41,32 +51,32 @@ for await (const line of rl) {
     if (obj.type === 'system' && obj.subtype === 'init') {
       const model = obj.model || 'unknown';
       const sid = obj.session_id || 'n/a';
-      process.stdout.write(`${C.mag}⚡ model: ${model} | session: ${sid}${C.reset}\n`);
+      write(`${C.mag}⚡ model: ${model} | session: ${sid}${C.reset}\n`);
       continue;
     }
 
     if (obj.type === 'assistant' && obj.message?.content) {
       for (const block of obj.message.content) {
         if (block.type === 'text' && block.text) {
-          process.stdout.write(block.text);
+          write(block.text);
         } else if (block.type === 'tool_use' && block.name) {
+          ensureNewline();
           const hint = block.input?.file_path
             || block.input?.command?.slice(0, 120)
             || block.input?.pattern
             || block.input?.query?.slice(0, 80)
             || '';
           const tc = TOOL_COLOR[block.name] || C.blue;
-          process.stdout.write(`${C.dim}${tc}⏵ ${block.name}${hint ? `: ${hint}` : ''}${C.reset}\n`);
+          write(`${C.dim}${tc}⏵ ${block.name}${hint ? `: ${hint}` : ''}${C.reset}\n`);
         }
       }
       continue;
     }
 
-    if (obj.type === 'result' && obj.result && !resultPrinted) {
-      resultPrinted = true;
+    if (obj.type === 'result') {
       continue;
     }
   } catch {
-    process.stdout.write(line + '\n');
+    write(line + '\n');
   }
 }
