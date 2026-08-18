@@ -54,5 +54,12 @@ export function buildCommand(params) {
     `printf '\\033[1;${c}m└─ DONE │ %ss ─┘\\033[0m\\n' "$_elapsed"`,
   ].join('\n');
 
-  return { content: [{ type: 'text', text: JSON.stringify({ command, cwd: params.cwd || null }) }] };
+  const label = `Claude CLI ${mode} (effort: ${effort || 'default'})`;
+
+  return { content: [{ type: 'text', text: JSON.stringify({
+    command,
+    cwd: params.cwd || null,
+    description: label,
+    block_until_ms: 0,
+  }) }] };
 }

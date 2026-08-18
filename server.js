@@ -24,8 +24,8 @@ server.tool(
   'claude_prompt',
   [
     'Build a Claude CLI command with mode defaults resolved.',
-    'Returns JSON { command, cwd } — execute the command via Cursor Shell tool.',
-    'For long-running tasks, use block_until_ms: 0 to background.',
+    'Returns JSON { command, cwd, description, block_until_ms }.',
+    'Pass all four fields directly to the Shell tool — never block the session.',
   ].join(' '),
   {
     prompt: z.string().describe('The prompt to send to Claude'),

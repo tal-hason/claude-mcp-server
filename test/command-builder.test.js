@@ -341,11 +341,13 @@ describe('buildCommand - output format', () => {
     assert.doesNotThrow(() => JSON.parse(result.content[0].text));
   });
 
-  it('parsed JSON has command (string) and cwd (string or null) keys', () => {
+  it('parsed JSON has command, cwd, description, and block_until_ms keys', () => {
     const result = buildCommand({ prompt: 'test' });
     const parsed = JSON.parse(result.content[0].text);
     assert.equal(typeof parsed.command, 'string');
     assert.ok(parsed.cwd === null || typeof parsed.cwd === 'string');
+    assert.equal(typeof parsed.description, 'string');
+    assert.equal(parsed.block_until_ms, 0);
   });
 });
 
