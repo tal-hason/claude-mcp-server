@@ -32,7 +32,7 @@ export function buildCommand(params) {
 
   const bin = process.env.CLAUDE_BIN || 'claude';
 
-  const args = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
+  const args = [shellQuote(bin), '--print', '--output-format', 'text', '--verbose'];
   if (params.model) args.push('--model', shellQuote(params.model));
   if (effort) args.push('--effort', effort);
   if (params.systemPrompt) args.push('--system-prompt', shellQuote(params.systemPrompt));
