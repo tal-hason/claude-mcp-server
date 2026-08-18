@@ -112,12 +112,13 @@ describe('buildCommand - mode resolution', () => {
 // === C. Command construction ===
 
 describe('buildCommand - command construction', () => {
-  it('bare prompt includes claude --print --output-format text --verbose', () => {
+  it('bare prompt includes claude --print --output-format stream-json --verbose piped to formatter', () => {
     const result = buildCommand({ prompt: 'hello' });
     const parsed = JSON.parse(result.content[0].text);
     assert.ok(parsed.command.includes('--print'));
-    assert.ok(parsed.command.includes('--output-format text'));
+    assert.ok(parsed.command.includes('--output-format stream-json'));
     assert.ok(parsed.command.includes('--verbose'));
+    assert.ok(parsed.command.includes('stream-format.js'), 'should pipe through stream-format.js');
   });
 
   it('bare prompt includes heredoc with the prompt text', () => {

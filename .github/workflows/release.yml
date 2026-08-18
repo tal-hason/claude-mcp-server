@@ -70,7 +70,7 @@ jobs:
           BUNDLE_DIR="claude-mcp-server-${VERSION}"
           mkdir -p "$BUNDLE_DIR"
 
-          cp server.js command-builder.js modes.js package.json package-lock.json setup.sh "$BUNDLE_DIR/"
+          cp server.js command-builder.js stream-format.js modes.js package.json package-lock.json setup.sh "$BUNDLE_DIR/"
           cp -r node_modules "$BUNDLE_DIR/node_modules"
 
           tar czf "claude-mcp-server-${VERSION}.tar.gz" "$BUNDLE_DIR"

@@ -5,7 +5,12 @@
 // 3. [Constraint]: Must not import MCP SDK or trigger transport connections.
 
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { MODES, MODE_NAMES } from './modes.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+export const FORMATTER_PATH = join(__dirname, 'stream-format.js');
 
 export { MODE_NAMES };
 
@@ -32,7 +37,7 @@ export function buildCommand(params) {
 
   const bin = process.env.CLAUDE_BIN || 'claude';
 
-  const args = [shellQuote(bin), '--print', '--output-format', 'text', '--verbose'];
+  const args = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
   if (params.model) args.push('--model', shellQuote(params.model));
   if (effort) args.push('--effort', effort);
   if (params.systemPrompt) args.push('--system-prompt', shellQuote(params.systemPrompt));
@@ -44,10 +49,12 @@ export function buildCommand(params) {
   const colors = { architect: '35', reviewer: '31', planner: '34', explorer: '32', executor: '33' };
   const c = colors[mode] || '37';
 
+  const fmt = shellQuote(FORMATTER_PATH);
+
   const command = [
     `_start=$(date +%s)`,
     `printf '\\033[1;${c}m┌─ %s │ %s │ %s ─┐\\033[0m\\n' ${shellQuote(mode.toUpperCase())} ${shellQuote(model)} "$(date +%H:%M:%S)"`,
-    `${args.join(' ')} <<'${delim}'`,
+    `${args.join(' ')} <<'${delim}' | node ${fmt}`,
     params.prompt,
     delim,
     `_elapsed=$(( $(date +%s) - _start ))`,
