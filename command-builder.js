@@ -51,15 +51,20 @@ export function buildCommand(params) {
 
   const fmt = shellQuote(FORMATTER_PATH);
 
-  const command = [
-    `_start=$(date +%s)`,
+  const commandLines = [`_start=$(date +%s)`];
+  if (params.cwd) {
+    commandLines.push(`cd ${shellQuote(params.cwd)} || exit 1`);
+  }
+  commandLines.push(
     `printf '\\033[1;${c}m┌─ %s │ %s │ %s ─┐\\033[0m\\n' ${shellQuote(mode.toUpperCase())} ${shellQuote(model)} "$(date +%H:%M:%S)"`,
     `${args.join(' ')} <<'${delim}' | node ${fmt}`,
     params.prompt,
     delim,
     `_elapsed=$(( $(date +%s) - _start ))`,
     `printf '\\033[1;${c}m└─ DONE │ %ss ─┘\\033[0m\\n' "$_elapsed"`,
-  ].join('\n');
+  );
+
+  const command = commandLines.join('\n');
 
   const label = `Claude CLI ${mode} (effort: ${effort || 'default'})`;
 

@@ -168,16 +168,18 @@ describe('buildCommand - command construction', () => {
     assert.ok(parsed.command.includes('abc-123'));
   });
 
-  it('with cwd sets cwd field in returned JSON', () => {
+  it('with cwd sets cwd field and embeds cd in command', () => {
     const result = buildCommand({ prompt: 'test', cwd: '/tmp/work' });
     const parsed = JSON.parse(result.content[0].text);
     assert.equal(parsed.cwd, '/tmp/work');
+    assert.ok(parsed.command.includes("cd '/tmp/work' || exit 1"));
   });
 
-  it('without cwd sets cwd to null in returned JSON', () => {
+  it('without cwd omits cd from command', () => {
     const result = buildCommand({ prompt: 'test' });
     const parsed = JSON.parse(result.content[0].text);
     assert.equal(parsed.cwd, null);
+    assert.ok(!parsed.command.match(/^cd /m));
   });
 });
 
