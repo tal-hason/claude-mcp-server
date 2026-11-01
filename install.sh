@@ -11,6 +11,7 @@ set -euo pipefail
 REPO="tal-hason/claude-mcp-server"
 INSTALL_DIR="${CLAUDE_MCP_DIR:-${HOME}/.local/share/claude-mcp-server}"
 MCP_CONFIG="${HOME}/.cursor/mcp.json"
+GEMINI_MCP_CONFIG="${HOME}/.gemini/config/mcp_config.json"
 SERVER_ENTRY="claude-cli"
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
@@ -108,12 +109,14 @@ register_mcp() {
     echo "This install points to:                   $server_js"
     if [[ "${FORCE:-}" == "1" ]]; then
       echo "FORCE=1 — overwriting."
-    else
+    elif [ -t 0 ]; then
       read -rp "Overwrite? [y/N] " answer
       if [[ ! "$answer" =~ ^[Yy]$ ]]; then
         echo "Skipped MCP registration. You can update ~/.cursor/mcp.json manually."
         return
       fi
+    else
+      echo "Non-interactive session detected — updating MCP registration."
     fi
   fi
 
@@ -126,6 +129,49 @@ register_mcp() {
   green "MCP server registered as '$SERVER_ENTRY'."
 }
 
+generate_mcp_config() {
+  local target_dir="$1"
+  local server_js="$target_dir/server.js"
+  cat <<EOF > "$target_dir/mcp_config.json"
+{
+  "mcpServers": {
+    "claude-cli": {
+      "command": "node",
+      "args": ["$server_js"]
+    }
+  }
+}
+EOF
+  green "Generated dynamic mcp_config.json in $target_dir"
+}
+
+register_antigravity_plugin() {
+  local target_dir="$1"
+  local plugin_dir="${HOME}/.gemini/config/plugins"
+  local target_link="${plugin_dir}/claude-cli"
+
+  mkdir -p "$plugin_dir"
+  if [[ -d "$target_link" && ! -L "$target_link" ]]; then
+    mv "$target_link" "${target_link}.bak.$(date +%s)"
+  fi
+  ln -sfn "$target_dir" "$target_link"
+  green "Registered Antigravity plugin symlink: $target_link -> $target_dir"
+
+  mkdir -p "$(dirname "$GEMINI_MCP_CONFIG")"
+  if [[ ! -f "$GEMINI_MCP_CONFIG" ]]; then
+    echo '{"mcpServers":{}}' > "$GEMINI_MCP_CONFIG"
+  fi
+
+  if ! jq -e ".mcpServers[\"$SERVER_ENTRY\"]" "$GEMINI_MCP_CONFIG" >/dev/null 2>&1; then
+    local tmp
+    tmp=$(mktemp)
+    jq --arg sjs "$target_dir/server.js" \
+      ".mcpServers[\"$SERVER_ENTRY\"] = { command: \"node\", args: [\$sjs] }" \
+      "$GEMINI_MCP_CONFIG" > "$tmp" && mv "$tmp" "$GEMINI_MCP_CONFIG"
+    green "Registered '$SERVER_ENTRY' in $GEMINI_MCP_CONFIG"
+  fi
+}
+
 main() {
   echo
   blue "=== Claude CLI MCP Server — Installer ==="
@@ -134,7 +180,9 @@ main() {
   check_deps
   get_latest_release
   download_and_extract
+  generate_mcp_config "$INSTALL_DIR"
   register_mcp
+  register_antigravity_plugin "$INSTALL_DIR"
 
   echo
   green "=== Installation complete (v${VERSION}) ==="

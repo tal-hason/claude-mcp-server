@@ -3,13 +3,14 @@
 # @ai-rules:
 # 1. [Constraint]: Idempotent — safe to run multiple times.
 # 2. [Constraint]: No hardcoded paths — resolves SCRIPT_DIR from $0.
-# 3. [Pattern]: Merges into ~/.cursor/mcp.json without clobbering existing servers.
+# 3. [Pattern]: Merges into ~/.cursor/mcp.json and ~/.gemini/config/mcp_config.json without clobbering existing servers.
 # 4. [Gotcha]: jq is required for JSON merge; script fails fast if missing.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MCP_CONFIG="${HOME}/.cursor/mcp.json"
+GEMINI_MCP_CONFIG="${HOME}/.gemini/config/mcp_config.json"
 SERVER_ENTRY="claude-cli"
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
@@ -46,6 +47,22 @@ install_server_deps() {
   cd "$SCRIPT_DIR"
   npm install --no-fund --no-audit
   green "Server dependencies installed."
+}
+
+generate_mcp_config() {
+  local target_dir="$1"
+  local server_js="$target_dir/server.js"
+  cat <<EOF > "$target_dir/mcp_config.json"
+{
+  "mcpServers": {
+    "claude-cli": {
+      "command": "node",
+      "args": ["$server_js"]
+    }
+  }
+}
+EOF
+  green "Generated dynamic mcp_config.json in $target_dir"
 }
 
 register_mcp() {
@@ -94,21 +111,136 @@ register_mcp() {
   green "MCP server registered as '$SERVER_ENTRY' in $MCP_CONFIG"
 }
 
+register_antigravity_plugin() {
+  local target_dir="$1"
+  local plugin_dir="${HOME}/.gemini/config/plugins"
+  local target_link="${plugin_dir}/claude-cli"
+
+  mkdir -p "$plugin_dir"
+  if [[ -d "$target_link" && ! -L "$target_link" ]]; then
+    mv "$target_link" "${target_link}.bak.$(date +%s)"
+  fi
+  ln -sfn "$target_dir" "$target_link"
+  green "Registered Antigravity plugin symlink: $target_link -> $target_dir"
+
+  mkdir -p "$(dirname "$GEMINI_MCP_CONFIG")"
+  if [[ ! -f "$GEMINI_MCP_CONFIG" ]]; then
+    echo '{"mcpServers":{}}' > "$GEMINI_MCP_CONFIG"
+  fi
+
+  if ! jq -e ".mcpServers[\"$SERVER_ENTRY\"]" "$GEMINI_MCP_CONFIG" >/dev/null 2>&1; then
+    local tmp
+    tmp=$(mktemp)
+    jq --arg sjs "$target_dir/server.js" \
+      ".mcpServers[\"$SERVER_ENTRY\"] = { command: \"node\", args: [\$sjs] }" \
+      "$GEMINI_MCP_CONFIG" > "$tmp" && mv "$tmp" "$GEMINI_MCP_CONFIG"
+    green "Registered '$SERVER_ENTRY' in $GEMINI_MCP_CONFIG"
+  fi
+}
+
+patch_mcp_env() {
+  local target_file="$1"
+  local key="$2"
+  local val="$3"
+
+  [[ -z "$val" ]] && return 0
+  mkdir -p "$(dirname "$target_file")"
+  if [[ ! -f "$target_file" ]]; then
+    echo '{"mcpServers":{}}' > "$target_file"
+  fi
+
+  local tmp
+  tmp=$(mktemp)
+  jq --arg key "$key" --arg val "$val" '
+    .mcpServers["claude-cli"] = (.mcpServers["claude-cli"] // {}) |
+    .mcpServers["claude-cli"].env = (.mcpServers["claude-cli"].env // {}) |
+    .mcpServers["claude-cli"].env[$key] = $val
+  ' "$target_file" > "$tmp" && mv "$tmp" "$target_file"
+  chmod 600 "$target_file"
+}
+
+configure_mcp() {
+  local primary_project=""
+  local secondary_project=""
+  local primary_credentials=""
+  local secondary_credentials=""
+  local enmaas_key=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --configure)
+        shift
+        ;;
+      --primary-project)
+        if [[ $# -ge 2 ]]; then primary_project="$2"; shift 2; else shift; fi
+        ;;
+      --secondary-project)
+        if [[ $# -ge 2 ]]; then secondary_project="$2"; shift 2; else shift; fi
+        ;;
+      --primary-credentials)
+        if [[ $# -ge 2 ]]; then primary_credentials="$2"; shift 2; else shift; fi
+        ;;
+      --secondary-credentials)
+        if [[ $# -ge 2 ]]; then secondary_credentials="$2"; shift 2; else shift; fi
+        ;;
+      --enmaas-key)
+        if [[ $# -ge 2 ]]; then enmaas_key="$2"; shift 2; else shift; fi
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  local cursor_config="${HOME}/.cursor/mcp.json"
+  local gemini_config="${HOME}/.gemini/config/mcp_config.json"
+
+  for config_file in "$cursor_config" "$gemini_config"; do
+    if [[ -n "$primary_project" ]]; then
+      patch_mcp_env "$config_file" "VERTEX_PRIMARY_PROJECT" "$primary_project"
+      patch_mcp_env "$config_file" "ANTHROPIC_VERTEX_PROJECT_ID" "$primary_project"
+    fi
+    if [[ -n "$secondary_project" ]]; then
+      patch_mcp_env "$config_file" "VERTEX_SECONDARY_PROJECT" "$secondary_project"
+    fi
+    if [[ -n "$primary_credentials" ]]; then
+      patch_mcp_env "$config_file" "VERTEX_PRIMARY_CREDENTIALS" "$primary_credentials"
+    fi
+    if [[ -n "$secondary_credentials" ]]; then
+      patch_mcp_env "$config_file" "VERTEX_SECONDARY_CREDENTIALS" "$secondary_credentials"
+    fi
+    if [[ -n "$enmaas_key" ]]; then
+      patch_mcp_env "$config_file" "ENMAAS_KEY" "$enmaas_key"
+    fi
+  done
+
+  green "Successfully updated claude-cli environment in $cursor_config and $gemini_config"
+}
+
 main() {
+  for arg in "$@"; do
+    if [[ "$arg" == "--configure" ]]; then
+      configure_mcp "$@"
+      return 0
+    fi
+  done
+
   echo
   blue "=== Claude CLI MCP Server — Setup ==="
   echo
 
   check_deps
   install_server_deps
+  generate_mcp_config "$SCRIPT_DIR"
   register_mcp
+  register_antigravity_plugin "$SCRIPT_DIR"
 
   echo
   green "=== Setup complete ==="
   echo
   echo "Next steps:"
   echo "  1. Restart Cursor (or reload MCP servers)"
-  echo "  2. Use the claude_prompt tool from any Cursor chat"
+  echo "  2. Use the claude_prompt tool from any Cursor chat or Antigravity agent"
   echo
   echo "Uninstall:"
   echo "  jq 'del(.mcpServers[\"claude-cli\"])' ~/.cursor/mcp.json > /tmp/mcp.json && mv /tmp/mcp.json ~/.cursor/mcp.json"

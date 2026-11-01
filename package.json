@@ -1,7 +1,7 @@
 {
   "name": "claude-mcp-server",
-  "version": "0.5.0",
-  "description": "MCP server — Claude CLI command builder for Cursor agents",
+  "version": "0.6.0",
+  "description": "MCP server — Claude CLI command builder for Cursor agents with EnMaaS and Vertex failover",
   "type": "module",
   "license": "MIT",
   "repository": {

@@ -7,8 +7,18 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { execSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { shellQuote, buildCommand } from '../command-builder.js';
+
+// Dynamic loader for providers.js to allow running tests in Red-First ATDD
+async function getProviders() {
+  return await import('../providers.js');
+}
 
 // === A. shellQuote function ===
 
@@ -193,12 +203,12 @@ describe('buildCommand - heredoc delimiter', () => {
     assert.ok(match, 'Heredoc delimiter should match __PROMPT_<hex>__ pattern');
   });
 
-  it('delimiter has 8 hex chars between prefix and suffix', () => {
+  it('delimiter has 32 hex chars between prefix and suffix', () => {
     const result = buildCommand({ prompt: 'test' });
     const parsed = JSON.parse(result.content[0].text);
     const match = parsed.command.match(/__PROMPT_([a-f0-9]+)__/);
     assert.ok(match);
-    assert.equal(match[1].length, 8);
+    assert.equal(match[1].length, 32);
   });
 
   it('two consecutive calls produce different delimiters', () => {
@@ -384,5 +394,286 @@ describe('buildCommand - POSIX timing', () => {
       !parsed.command.includes('$SECONDS') && !parsed.command.includes('SECONDS='),
       'Command must not use bash $SECONDS (not POSIX)'
     );
+  });
+});
+
+// === J. providers.js - resolveProvider (T-1, T-2, T-3, T-10, T-11) ===
+
+describe('providers.js - resolveProvider', () => {
+  it('T-1: resolveProvider auto-detection: Claude models default to Vertex', async () => {
+    const { resolveProvider } = await getProviders();
+    assert.equal(resolveProvider('auto', 'claude-sonnet-4-6'), 'vertex');
+  });
+
+  it('T-2: resolveProvider auto-detection: RITS / EnMaaS models route to EnMaaS', async () => {
+    const { resolveProvider } = await getProviders();
+    assert.equal(resolveProvider('auto', 'rits/zai-org/glm-5-3'), 'enmaas');
+  });
+
+  it('T-3: resolveProvider explicit override: EnMaaS provider forced', async () => {
+    const { resolveProvider } = await getProviders();
+    assert.equal(resolveProvider('enmaas', 'claude-sonnet-4-6'), 'enmaas');
+  });
+
+  it('T-10: resolveProvider explicit override precedence over model string', async () => {
+    const { resolveProvider } = await getProviders();
+    assert.equal(resolveProvider('vertex', 'rits/zai-org/glm-5-3'), 'vertex');
+  });
+
+  it('T-11: resolveProvider auto-detection handles undefined inputs safely', async () => {
+    const { resolveProvider } = await getProviders();
+    assert.equal(resolveProvider(undefined, undefined), 'vertex');
+  });
+});
+
+// === K. providers.js - buildProviderEnv (T-4, T-5, T-17, T-18) ===
+
+describe('providers.js - buildProviderEnv', () => {
+  it('T-4: buildProviderEnv("enmaas") returns envVars and settings override', async () => {
+    const { buildProviderEnv } = await getProviders();
+    const envConfig = buildProviderEnv('enmaas');
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes("ANTHROPIC_BASE_URL='https://api.enmaas.devshift.net'")),
+      'envVars must contain ANTHROPIC_BASE_URL'
+    );
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1')),
+      'envVars must contain CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1'
+    );
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('CLAUDE_CODE_ENVIRONMENT_KIND=byoc')),
+      'envVars must contain CLAUDE_CODE_ENVIRONMENT_KIND=byoc'
+    );
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('${ENMAAS_KEY:?')),
+      'envVars must contain ${ENMAAS_KEY:? guard'
+    );
+    assert.deepEqual(envConfig.settings, { env: { CLAUDE_CODE_USE_VERTEX: '' } });
+  });
+
+  it('T-5: buildProviderEnv("vertex") returns envVars with clean gateway unset and null settings', async () => {
+    const { buildProviderEnv } = await getProviders();
+    const envConfig = buildProviderEnv('vertex');
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('CLAUDE_CODE_USE_VERTEX=1')),
+      'envVars must contain CLAUDE_CODE_USE_VERTEX=1'
+    );
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes("ANTHROPIC_BASE_URL=''")),
+      'envVars must clear ANTHROPIC_BASE_URL'
+    );
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('ANTHROPIC_API_KEY=""')),
+      'envVars must clear ANTHROPIC_API_KEY'
+    );
+    assert.equal(envConfig.settings, null);
+  });
+
+  it('T-17: buildProviderEnv("invalid_provider") returns safe fallback Vertex configuration without crash', async () => {
+    const { buildProviderEnv } = await getProviders();
+    const envConfig = buildProviderEnv('invalid_provider');
+    assert.ok(envConfig && Array.isArray(envConfig.envVars), 'Fallback config must return valid object');
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('CLAUDE_CODE_USE_VERTEX=1')),
+      'Fallback config must use Vertex configuration'
+    );
+    assert.equal(envConfig.settings, null);
+  });
+
+  it('T-18: buildProviderEnv("vertex") unsets ambient BYOC token and environment kind', async () => {
+    const { buildProviderEnv } = await getProviders();
+    const envConfig = buildProviderEnv('vertex');
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('CLAUDE_CODE_ENVIRONMENT_KIND=""')),
+      'Vertex env must clear CLAUDE_CODE_ENVIRONMENT_KIND'
+    );
+    assert.ok(
+      envConfig.envVars.some((v) => v.includes('ANTHROPIC_API_KEY=""')),
+      'Vertex env must clear ANTHROPIC_API_KEY'
+    );
+  });
+});
+
+// === L. providers.js - supportsEffort (T-6, T-9, T-16) ===
+
+describe('providers.js - supportsEffort', () => {
+  it('T-6: supportsEffort returns false for third-party GLM models', async () => {
+    const { supportsEffort } = await getProviders();
+    assert.equal(supportsEffort('rits/zai-org/glm-5-3'), false);
+  });
+
+  it('T-9: supportsEffort handles undefined and null safely without TypeError', async () => {
+    const { supportsEffort } = await getProviders();
+    assert.equal(supportsEffort(undefined), true);
+    assert.equal(supportsEffort(null), true);
+  });
+
+  it('T-16: supportsEffort returns true for namespaced Claude models', async () => {
+    const { supportsEffort } = await getProviders();
+    assert.equal(supportsEffort('rits/anthropic/claude-opus-5-5'), true);
+  });
+});
+
+// === M. command-builder.js - EnMaaS gateway routing & settings (T-7, T-8, T-12, T-13) ===
+
+describe('buildCommand - EnMaaS gateway routing and effort suppression', () => {
+  it('T-7: buildCommand suppresses --effort flag for GLM 5.3 in reviewer mode', () => {
+    const result = buildCommand({ mode: 'reviewer', model: 'rits/zai-org/glm-5-3', prompt: 'test' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(!parsed.command.includes('--effort'), 'Command should suppress --effort for third-party models');
+  });
+
+  it('T-8: buildCommand embeds EnMaaS gateway environment, settings, and set -eo pipefail', () => {
+    const result = buildCommand({ provider: 'enmaas', prompt: 'test' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(parsed.command.includes('api.enmaas.devshift.net'), 'Command should include api.enmaas.devshift.net');
+    assert.ok(parsed.command.includes('--settings'), 'Command should include --settings');
+    assert.ok(parsed.command.includes('set -eo pipefail; '), 'Command should prepend set -eo pipefail; ');
+  });
+
+  it('T-12: buildCommand serializes settings JSON CLI token for EnMaaS', () => {
+    const result = buildCommand({ provider: 'enmaas', prompt: 'test' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(
+      parsed.command.includes("--settings '{\"env\":{\"CLAUDE_CODE_USE_VERTEX\":\"\"}}'"),
+      'Command should serialize settings JSON CLI token correctly'
+    );
+  });
+
+  it('T-13: buildCommand description label ends with (effort: unsupported) for third-party models', () => {
+    const result = buildCommand({ mode: 'reviewer', model: 'rits/zai-org/glm-5-3', prompt: 'test' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(
+      parsed.description.endsWith('(effort: unsupported)'),
+      `Description label should end with (effort: unsupported), got: "${parsed.description}"`
+    );
+  });
+});
+
+// === N. Vertex multi-project failover (T-19, T-20, T-21) ===
+
+describe('buildCommand & providers.js - Vertex multi-project budget failover', () => {
+  it('T-19: resolveVertexFailoverConfig returns enabled: false by default when secondary project omitted', async () => {
+    const { resolveVertexFailoverConfig } = await getProviders();
+    const config = resolveVertexFailoverConfig({ prompt: 'test' });
+    assert.equal(config.enabled, false);
+    const result = buildCommand({ prompt: 'test' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(!parsed.command.includes('_run_claude'), 'Single-pass command should not include _run_claude');
+  });
+
+  it('T-20: buildCommand with primary and secondary projects generates POSIX retry wrapper', () => {
+    const result = buildCommand({ primaryProject: 'p1', secondaryProject: 'p2', prompt: 'test' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(parsed.command.includes('_run_claude'), 'Command should define _run_claude function');
+    assert.ok(parsed.command.includes('ANTHROPIC_VERTEX_PROJECT_ID'), 'Command should export ANTHROPIC_VERTEX_PROJECT_ID');
+    assert.ok(
+      parsed.command.includes('RESOURCE_EXHAUSTED|Quota exceeded|429|budget|billing'),
+      'Command should check for quota/budget exhaustion error patterns'
+    );
+  });
+
+  it('T-21: buildCommand exports secondary credentials when configured in failover mode', () => {
+    const result = buildCommand({
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+      secondaryCredentials: '/path/to/sa2.json',
+      prompt: 'test',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(parsed.command.includes('GOOGLE_APPLICATION_CREDENTIALS'), 'Command should reference GOOGLE_APPLICATION_CREDENTIALS');
+    assert.ok(parsed.command.includes("'/path/to/sa2.json'"), 'Command should export /path/to/sa2.json for secondary');
+  });
+});
+
+// === O. Bash syntax validation & CLI integration (T-14, T-22, T-23) ===
+
+describe('Bash syntax validation and setup.sh --configure CLI verification', () => {
+  it('T-14: execSync("bash -n") validates generated commands for EnMaaS & Vertex', () => {
+    const enmaasResult = buildCommand({ provider: 'enmaas', prompt: 'test syntax' });
+    const enmaasParsed = JSON.parse(enmaasResult.content[0].text);
+    assert.ok(enmaasParsed.command.includes('api.enmaas.devshift.net'), 'EnMaaS command should configure EnMaaS gateway');
+    assert.doesNotThrow(() => {
+      execSync('bash -n', { input: enmaasParsed.command, stdio: ['pipe', 'pipe', 'pipe'] });
+    }, 'EnMaaS command string must pass bash -n validation');
+
+    const vertexResult = buildCommand({ provider: 'vertex', prompt: 'test syntax' });
+    const vertexParsed = JSON.parse(vertexResult.content[0].text);
+    assert.doesNotThrow(() => {
+      execSync('bash -n', { input: vertexParsed.command, stdio: ['pipe', 'pipe', 'pipe'] });
+    }, 'Vertex command string must pass bash -n validation');
+  });
+
+  it('T-22: execSync("bash -n") validates Vertex failover command script syntax', () => {
+    const failoverResult = buildCommand({ primaryProject: 'p1', secondaryProject: 'p2', prompt: 'test failover syntax' });
+    const failoverParsed = JSON.parse(failoverResult.content[0].text);
+    assert.ok(failoverParsed.command.includes('_run_claude'), 'Failover wrapper must be generated');
+    assert.doesNotThrow(() => {
+      execSync('bash -n', { input: failoverParsed.command, stdio: ['pipe', 'pipe', 'pipe'] });
+    }, 'Vertex failover command script must pass bash -n validation');
+  });
+
+  it('T-23: setup.sh syntax validation and verification of --configure logic', () => {
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    const setupShPath = path.resolve(__dirname, '../setup.sh');
+
+    // 1. Syntax check
+    assert.doesNotThrow(() => {
+      execSync(`bash -n "${setupShPath}"`, { stdio: 'pipe' });
+    }, 'setup.sh should pass bash -n syntax check');
+
+    // 2. Integration check with isolated temp directory
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-setup-test-'));
+    try {
+      const cursorConfigDir = path.join(tempDir, '.cursor');
+      const geminiConfigDir = path.join(tempDir, '.gemini', 'config');
+      fs.mkdirSync(cursorConfigDir, { recursive: true });
+      fs.mkdirSync(geminiConfigDir, { recursive: true });
+
+      const initialCursorConfig = {
+        mcpServers: {
+          'sibling-server': { command: 'echo', args: ['hello'] },
+          'claude-cli': { command: 'node', args: ['/path/to/server.js'] }
+        }
+      };
+      const initialGeminiConfig = {
+        mcpServers: {
+          'other-server': { command: 'cat' },
+          'claude-cli': { command: 'node', args: ['/path/to/server.js'] }
+        }
+      };
+
+      fs.writeFileSync(path.join(cursorConfigDir, 'mcp.json'), JSON.stringify(initialCursorConfig, null, 2));
+      fs.writeFileSync(path.join(geminiConfigDir, 'mcp_config.json'), JSON.stringify(initialGeminiConfig, null, 2));
+
+      // Execute setup.sh with --configure flags
+      execSync(
+        `bash "${setupShPath}" --configure --primary-project p1 --secondary-project p2 --enmaas-key secret_token`,
+        {
+          env: { ...process.env, HOME: tempDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }
+      );
+
+      // Verify ~/.cursor/mcp.json preservation & update
+      const updatedCursor = JSON.parse(fs.readFileSync(path.join(cursorConfigDir, 'mcp.json'), 'utf8'));
+      assert.ok(updatedCursor.mcpServers['sibling-server'], 'Sibling MCP server in cursor config must be preserved');
+      assert.ok(updatedCursor.mcpServers['claude-cli']?.env, 'claude-cli.env must be defined in cursor config');
+      const cursorPrimary = updatedCursor.mcpServers['claude-cli'].env.VERTEX_PRIMARY_PROJECT || updatedCursor.mcpServers['claude-cli'].env.ANTHROPIC_VERTEX_PROJECT_ID;
+      assert.equal(cursorPrimary, 'p1');
+      assert.equal(updatedCursor.mcpServers['claude-cli'].env.VERTEX_SECONDARY_PROJECT, 'p2');
+      assert.equal(updatedCursor.mcpServers['claude-cli'].env.ENMAAS_KEY, 'secret_token');
+
+      // Verify ~/.gemini/config/mcp_config.json preservation & update
+      const updatedGemini = JSON.parse(fs.readFileSync(path.join(geminiConfigDir, 'mcp_config.json'), 'utf8'));
+      assert.ok(updatedGemini.mcpServers['other-server'], 'Sibling MCP server in gemini config must be preserved');
+      assert.ok(updatedGemini.mcpServers['claude-cli']?.env, 'claude-cli.env must be defined in gemini config');
+      const geminiPrimary = updatedGemini.mcpServers['claude-cli'].env.VERTEX_PRIMARY_PROJECT || updatedGemini.mcpServers['claude-cli'].env.ANTHROPIC_VERTEX_PROJECT_ID;
+      assert.equal(geminiPrimary, 'p1');
+      assert.equal(updatedGemini.mcpServers['claude-cli'].env.VERTEX_SECONDARY_PROJECT, 'p2');
+      assert.equal(updatedGemini.mcpServers['claude-cli'].env.ENMAAS_KEY, 'secret_token');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
