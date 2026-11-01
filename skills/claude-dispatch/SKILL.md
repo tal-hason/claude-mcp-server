@@ -29,13 +29,14 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 ## 2. Providers & Environment Configuration
 
 ### Red Hat EnMaaS AI Gateway
-- Gateway URL: `https://api.enmaas.devshift.net`
+- Gateway URL: Configured via `ENMAAS_BASE_URL` (defaults to `https://api.enmaas.example.com`).
 - Authentication: `ENMAAS_KEY` environment variable (required when routing to EnMaaS).
 - **Process Environment & Security Boundary (CR-01 & CR-03)**:
   - `ENMAAS_KEY` must be exported in the user's shell environment or profile (e.g. `~/.bashrc`, `~/.zshrc`) so that the agent Shell tool inherits the credential during command execution.
   - **Security Warning**: Avoid passing raw tokens via CLI arguments (`--enmaas-key <secret>`) in multi-user or shared environments, as arguments are visible in process tables (`ps aux`, `/proc/$pid/cmdline`). Always prefer setting `export ENMAAS_KEY="<token>"` in the shell environment.
 - Auto-routed models: `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/*`, or when `provider: "enmaas"` is explicitly set.
 - Effort support: Reasoning effort is supported for Claude models (`opus`, `sonnet`); suppressed as `unsupported` for third-party models (e.g. `rits/zai-org/glm-5-3`).
+- Cross-Provider Failover: When routing to EnMaaS with `secondaryProject` (or `VERTEX_SECONDARY_PROJECT`) configured, gateway transient outages (429, 502, 503, 504, connection timeouts) trigger automatic subshell failover to GCP Vertex AI with Sonnet fallback and clean environment sanitization.
 
 ### Google Cloud Vertex AI
 - Default provider for standard Claude models (`claude-sonnet-4-6`, `claude-opus-4-8`).
@@ -60,7 +61,7 @@ Agents can autonomously configure, verify, and heal `claude-cli` MCP server sett
 2. **Probe Environment**:
    - Check existing configs: `~/.cursor/mcp.json` and `~/.gemini/config/mcp_config.json`.
    - Verify GCP credentials: `gcloud auth print-access-token`.
-   - Verify EnMaaS token: `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ENMAAS_KEY" https://api.enmaas.devshift.net/v1/models`.
+   - Verify EnMaaS token: `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ENMAAS_KEY" "${ENMAAS_BASE_URL:-https://api.enmaas.example.com}/v1/models"`.
 3. **Apply Configuration**:
    Execute deterministic CLI setup:
    ```bash
@@ -69,6 +70,7 @@ Agents can autonomously configure, verify, and heal `claude-cli` MCP server sett
      --secondary-project "<PROJECT_P2>" \
      --primary-credentials "<PATH_TO_SA1>" \
      --secondary-credentials "<PATH_TO_SA2>" \
+     --gateway-url "<ENMAAS_GATEWAY_URL>" \
      --enmaas-key "<ENMAAS_TOKEN>"
    ```
 4. **Verify Handshake**:
