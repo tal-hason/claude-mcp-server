@@ -7,6 +7,7 @@
 # 4. [Gotcha]: jq is required for JSON merge; script fails fast if missing.
 
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MCP_CONFIG="${HOME}/.cursor/mcp.json"
@@ -106,7 +107,7 @@ register_mcp() {
   tmp=$(mktemp)
   jq --argjson entry "$new_entry" \
     ".mcpServers[\"$SERVER_ENTRY\"] = \$entry" \
-    "$MCP_CONFIG" > "$tmp" && mv "$tmp" "$MCP_CONFIG"
+    "$MCP_CONFIG" > "$tmp" && cat "$tmp" > "$MCP_CONFIG" && rm -f "$tmp"
 
   green "MCP server registered as '$SERVER_ENTRY' in $MCP_CONFIG"
 }
@@ -133,7 +134,7 @@ register_antigravity_plugin() {
     tmp=$(mktemp)
     jq --arg sjs "$target_dir/server.js" \
       ".mcpServers[\"$SERVER_ENTRY\"] = { command: \"node\", args: [\$sjs] }" \
-      "$GEMINI_MCP_CONFIG" > "$tmp" && mv "$tmp" "$GEMINI_MCP_CONFIG"
+      "$GEMINI_MCP_CONFIG" > "$tmp" && cat "$tmp" > "$GEMINI_MCP_CONFIG" && rm -f "$tmp"
     green "Registered '$SERVER_ENTRY' in $GEMINI_MCP_CONFIG"
   fi
 }
@@ -155,7 +156,7 @@ patch_mcp_env() {
     .mcpServers["claude-cli"] = (.mcpServers["claude-cli"] // {}) |
     .mcpServers["claude-cli"].env = (.mcpServers["claude-cli"].env // {}) |
     .mcpServers["claude-cli"].env[$key] = $val
-  ' "$target_file" > "$tmp" && mv "$tmp" "$target_file"
+  ' "$target_file" > "$tmp" && cat "$tmp" > "$target_file" && rm -f "$tmp"
   chmod 600 "$target_file"
 }
 
@@ -165,6 +166,7 @@ configure_mcp() {
   local primary_credentials=""
   local secondary_credentials=""
   local enmaas_key=""
+  local gateway_url=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -174,23 +176,36 @@ configure_mcp() {
       --primary-project)
         if [[ $# -ge 2 ]]; then primary_project="$2"; shift 2; else shift; fi
         ;;
-      --secondary-project)
+      --secondary-project|--failover-project)
         if [[ $# -ge 2 ]]; then secondary_project="$2"; shift 2; else shift; fi
         ;;
       --primary-credentials)
         if [[ $# -ge 2 ]]; then primary_credentials="$2"; shift 2; else shift; fi
         ;;
-      --secondary-credentials)
+      --secondary-credentials|--failover-credentials)
         if [[ $# -ge 2 ]]; then secondary_credentials="$2"; shift 2; else shift; fi
         ;;
       --enmaas-key)
         if [[ $# -ge 2 ]]; then enmaas_key="$2"; shift 2; else shift; fi
+        ;;
+      --gateway-url)
+        if [[ $# -ge 2 ]]; then gateway_url="$2"; shift 2; else shift; fi
         ;;
       *)
         shift
         ;;
     esac
   done
+
+  if [[ -n "$secondary_credentials" && -f "$secondary_credentials" ]]; then
+    secondary_credentials="$(cd "$(dirname "$secondary_credentials")" && pwd)/$(basename "$secondary_credentials")"
+  fi
+  if [[ -n "$primary_credentials" && -f "$primary_credentials" ]]; then
+    primary_credentials="$(cd "$(dirname "$primary_credentials")" && pwd)/$(basename "$primary_credentials")"
+  fi
+  if [[ -n "$gateway_url" ]]; then
+    gateway_url="${gateway_url%/}"
+  fi
 
   local cursor_config="${HOME}/.cursor/mcp.json"
   local gemini_config="${HOME}/.gemini/config/mcp_config.json"
@@ -211,6 +226,12 @@ configure_mcp() {
     fi
     if [[ -n "$enmaas_key" ]]; then
       patch_mcp_env "$config_file" "ENMAAS_KEY" "$enmaas_key"
+    fi
+    if [[ -n "$gateway_url" ]]; then
+      patch_mcp_env "$config_file" "ENMAAS_BASE_URL" "$gateway_url"
+    fi
+    if [[ -f "$config_file" ]]; then
+      chmod 600 "$config_file"
     fi
   done
 

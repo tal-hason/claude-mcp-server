@@ -20,6 +20,10 @@ async function getProviders() {
   return await import('../providers.js');
 }
 
+async function getFailover() {
+  return await import('../failover.js');
+}
+
 // === A. shellQuote function ===
 
 describe('shellQuote', () => {
@@ -71,7 +75,7 @@ describe('buildCommand - mode resolution', () => {
   it('reviewer mode sets effort to max', () => {
     const result = buildCommand({ prompt: 'test', mode: 'reviewer' });
     const parsed = JSON.parse(result.content[0].text);
-    assert.ok(parsed.command.includes('--effort max'));
+    assert.ok(parsed.command.includes("--effort 'max'"));
   });
 
   it('reviewer mode includes principal code reviewer in system prompt', () => {
@@ -83,7 +87,7 @@ describe('buildCommand - mode resolution', () => {
   it('explorer mode sets effort to low', () => {
     const result = buildCommand({ prompt: 'test', mode: 'explorer' });
     const parsed = JSON.parse(result.content[0].text);
-    assert.ok(parsed.command.includes('--effort low'));
+    assert.ok(parsed.command.includes("--effort 'low'"));
   });
 
   it('explorer mode includes quick research in system prompt', () => {
@@ -95,7 +99,7 @@ describe('buildCommand - mode resolution', () => {
   it('architect mode sets effort to high', () => {
     const result = buildCommand({ prompt: 'test', mode: 'architect' });
     const parsed = JSON.parse(result.content[0].text);
-    assert.ok(parsed.command.includes('--effort high'));
+    assert.ok(parsed.command.includes("--effort 'high'"));
   });
 
   it('architect mode includes systems architect in system prompt', () => {
@@ -114,8 +118,8 @@ describe('buildCommand - mode resolution', () => {
   it('explicit effort overrides mode default', () => {
     const result = buildCommand({ prompt: 'test', mode: 'reviewer', effort: 'low' });
     const parsed = JSON.parse(result.content[0].text);
-    assert.ok(parsed.command.includes('--effort low'));
-    assert.ok(!parsed.command.includes('--effort max'));
+    assert.ok(parsed.command.includes("--effort 'low'"));
+    assert.ok(!parsed.command.includes("--effort 'max'"));
   });
 });
 
@@ -433,7 +437,7 @@ describe('providers.js - buildProviderEnv', () => {
     const { buildProviderEnv } = await getProviders();
     const envConfig = buildProviderEnv('enmaas');
     assert.ok(
-      envConfig.envVars.some((v) => v.includes("ANTHROPIC_BASE_URL='https://api.enmaas.devshift.net'")),
+      envConfig.envVars.some((v) => v.includes('ANTHROPIC_BASE_URL="${ENMAAS_BASE_URL:-https://api.enmaas.example.com}"')),
       'envVars must contain ANTHROPIC_BASE_URL'
     );
     assert.ok(
@@ -459,7 +463,7 @@ describe('providers.js - buildProviderEnv', () => {
       'envVars must contain CLAUDE_CODE_USE_VERTEX=1'
     );
     assert.ok(
-      envConfig.envVars.some((v) => v.includes("ANTHROPIC_BASE_URL=''")),
+      envConfig.envVars.every((v) => !v.includes('ANTHROPIC_BASE_URL')),
       'envVars must clear ANTHROPIC_BASE_URL'
     );
     assert.ok(
@@ -526,7 +530,7 @@ describe('buildCommand - EnMaaS gateway routing and effort suppression', () => {
   it('T-8: buildCommand embeds EnMaaS gateway environment, settings, and set -eo pipefail', () => {
     const result = buildCommand({ provider: 'enmaas', prompt: 'test' });
     const parsed = JSON.parse(result.content[0].text);
-    assert.ok(parsed.command.includes('api.enmaas.devshift.net'), 'Command should include api.enmaas.devshift.net');
+    assert.ok(parsed.command.includes('https://api.enmaas.example.com'), 'Command should include https://api.enmaas.example.com');
     assert.ok(parsed.command.includes('--settings'), 'Command should include --settings');
     assert.ok(parsed.command.includes('set -eo pipefail; '), 'Command should prepend set -eo pipefail; ');
   });
@@ -592,7 +596,7 @@ describe('Bash syntax validation and setup.sh --configure CLI verification', () 
   it('T-14: execSync("bash -n") validates generated commands for EnMaaS & Vertex', () => {
     const enmaasResult = buildCommand({ provider: 'enmaas', prompt: 'test syntax' });
     const enmaasParsed = JSON.parse(enmaasResult.content[0].text);
-    assert.ok(enmaasParsed.command.includes('api.enmaas.devshift.net'), 'EnMaaS command should configure EnMaaS gateway');
+    assert.ok(enmaasParsed.command.includes('https://api.enmaas.example.com'), 'EnMaaS command should configure EnMaaS gateway');
     assert.doesNotThrow(() => {
       execSync('bash -n', { input: enmaasParsed.command, stdio: ['pipe', 'pipe', 'pipe'] });
     }, 'EnMaaS command string must pass bash -n validation');
@@ -675,5 +679,178 @@ describe('Bash syntax validation and setup.sh --configure CLI verification', () 
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
+  it('T-24: resolveFailoverConfig detects cross-provider failover when provider: "enmaas" and secondary project is provided', async () => {
+    const { resolveFailoverConfig } = await getFailover();
+    const config = resolveFailoverConfig('enmaas', { secondaryProject: 'cnv-ai-insights' }, {});
+    assert.equal(config.enabled, true, 'Failover must be enabled');
+    assert.equal(config.type, 'cross-provider', 'Failover type must be cross-provider');
+    assert.equal(config.secondaryProject, 'cnv-ai-insights');
+  });
+
+  it('T-24b: resolveFailoverConfig detects cross-provider failover when provider: "auto" resolves to EnMaaS and secondary Vertex project is provided', async () => {
+    const { resolveFailoverConfig } = await getFailover();
+    const config = resolveFailoverConfig('auto', { model: 'rits/zai-org/glm-5-3', secondaryProject: 'cnv-ai-insights' }, {});
+    assert.equal(config.enabled, true, 'Failover must be enabled');
+    assert.equal(config.type, 'cross-provider', 'Failover type must be cross-provider');
+    assert.equal(config.secondaryProject, 'cnv-ai-insights');
+  });
+
+  it('T-25: resolveFailoverConfig resolves secondary project and credentials from primary fallback', async () => {
+    const { resolveFailoverConfig } = await getFailover();
+    const configFromParams = resolveFailoverConfig('enmaas', {
+      primaryProject: 'cnv-ai-insights',
+      primaryCredentials: '/path/to/primary-sa.json',
+    }, {});
+    assert.equal(configFromParams.enabled, true, 'Failover must be enabled via primary fallback');
+    assert.equal(configFromParams.secondaryProject, 'cnv-ai-insights');
+    assert.equal(configFromParams.secondaryCredentials, '/path/to/primary-sa.json');
+
+    const configFromEnv = resolveFailoverConfig('enmaas', {}, {
+      VERTEX_PRIMARY_PROJECT: 'env-insights',
+      GOOGLE_APPLICATION_CREDENTIALS: '/env/sa.json',
+    });
+    assert.equal(configFromEnv.enabled, true, 'Failover must be enabled via env primary fallback');
+    assert.equal(configFromEnv.secondaryProject, 'env-insights');
+    assert.equal(configFromEnv.secondaryCredentials, '/env/sa.json');
+  });
+
+  it('T-26: resolveSecondaryModel maps rits/* or / models to undefined or explicit secondaryModel', async () => {
+    const { resolveSecondaryModel } = await getFailover();
+    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3'), undefined);
+    assert.equal(resolveSecondaryModel('some/model/path'), undefined);
+    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3', 'claude-3-5-sonnet'), 'claude-3-5-sonnet');
+    assert.equal(resolveSecondaryModel('claude-3-5-sonnet-v20241022'), 'claude-3-5-sonnet-v20241022');
+  });
+
+  it('T-27: Cross-provider failover script contains isolated _run_primary() and _run_secondary()', () => {
+    const result = buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'cnv-ai-insights',
+      prompt: 'test',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    const primaryMatch = parsed.command.match(/_run_primary\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_secondary/);
+    const secondaryMatch = parsed.command.match(/_run_secondary\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
+    assert.ok(primaryMatch, 'Command must contain _run_primary function body');
+    assert.ok(secondaryMatch, 'Command must contain _run_secondary function body');
+  });
+
+  it('T-28: _run_secondary() subshell strictly unsets ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY', () => {
+    const result = buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'cnv-ai-insights',
+      prompt: 'test secondary environment unset',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(
+      parsed.command.includes('unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY') ||
+      parsed.command.includes('unset ANTHROPIC_BASE_URL') && parsed.command.includes('unset ANTHROPIC_API_KEY'),
+      'Secondary runner must unset gateway variables'
+    );
+  });
+
+  it('T-29: _run_secondary() invocation omits --settings flag', () => {
+    const result = buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'cnv-ai-insights',
+      prompt: 'test settings flag isolation',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    const primaryMatch = parsed.command.match(/_run_primary\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_secondary/);
+    const secondaryMatch = parsed.command.match(/_run_secondary\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
+    assert.ok(primaryMatch[1].includes('--settings'), '_run_primary must include --settings flag');
+    assert.ok(!secondaryMatch[1].includes('--settings'), '_run_secondary must strictly omit --settings flag');
+  });
+
+  it('T-30: Stderr pattern matcher includes POSIX character classes for 429|502|503|504|ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT', () => {
+    const result = buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'cnv-ai-insights',
+      prompt: 'test',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(parsed.command.includes('429|502|503|504'), 'Must match 429/50x');
+    assert.ok(parsed.command.includes('ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT'), 'Must match network errors');
+  });
+
+  it('T-31: Stderr pattern matcher excludes 400/401/403', () => {
+    const result = buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'cnv-ai-insights',
+      prompt: 'test',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(parsed.command.includes('400|401|403'), 'Must have negative match for user errors');
+  });
+
+  it('T-32: Generated cross-provider and intra-vertex commands pass bash -n syntax validation', () => {
+    const crossResult = buildCommand({ provider: 'enmaas', secondaryProject: 'p2', prompt: 'test cross' });
+    const crossParsed = JSON.parse(crossResult.content[0].text);
+    assert.doesNotThrow(() => {
+      execSync('bash -n', { input: crossParsed.command, stdio: ['pipe', 'pipe', 'pipe'] });
+    }, 'Cross-provider command must pass bash -n validation');
+
+    const vertexResult = buildCommand({ provider: 'vertex', secondaryProject: 'p2', primaryProject: 'p1', prompt: 'test vertex' });
+    const vertexParsed = JSON.parse(vertexResult.content[0].text);
+    assert.doesNotThrow(() => {
+      execSync('bash -n', { input: vertexParsed.command, stdio: ['pipe', 'pipe', 'pipe'] });
+    }, 'Vertex command must pass bash -n validation');
+  });
+
+  it('T-33: ANTHROPIC_BASE_URL adheres to ENMAAS_BASE_URL variable expansion without hardcoded proprietary URL', () => {
+    const crossResult = buildCommand({ provider: 'enmaas', secondaryProject: 'p2', prompt: 'test cross' });
+    const crossParsed = JSON.parse(crossResult.content[0].text);
+    assert.ok(crossParsed.command.includes('${ENMAAS_BASE_URL:-https://api.enmaas.example.com}'), 'Must use configurable ENMAAS_BASE_URL expansion');
+    assert.ok(!crossParsed.command.includes('internal'), 'Must not leak internal domain');
+  });
+
+  it('T-34: secondaryArgs receives --effort when primaryModel suppressed effort and secondaryModel is Sonnet', () => {
+    const result = buildCommand({
+      provider: 'enmaas',
+      model: 'rits/zai-org/glm-5-3',
+      secondaryProject: 'cnv-ai-insights',
+      mode: 'reviewer',
+      prompt: 'test effort restoration on failover',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    const primaryMatch = parsed.command.match(/_run_primary\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_secondary/);
+    const secondaryMatch = parsed.command.match(/_run_secondary\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
+    assert.ok(!primaryMatch[1].includes('--effort'), 'Primary invocation with GLM must suppress --effort');
+    assert.ok(secondaryMatch[1].includes("--effort 'max'"), 'Secondary invocation failing over to Sonnet must restore --effort max');
+  });
+
+  it('T-35: buildProviderEnv("vertex") strictly omits ANTHROPIC_BASE_URL', async () => {
+    const { buildProviderEnv } = await getProviders();
+    const envConfig = buildProviderEnv('vertex');
+    assert.ok(
+      envConfig.envVars.every((v) => !v.includes('ANTHROPIC_BASE_URL')),
+      'Vertex envVars must not define ANTHROPIC_BASE_URL'
+    );
+  });
+
+  it('T-36: Execution test - errexit set -e failover triggers secondary on primary exit 1', () => {
+    const result = buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'cnv-ai-insights',
+      prompt: 'test error set e',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    let commandStr = parsed.command;
+
+    commandStr = commandStr.replace(
+      /_run_primary\s*\(\)\s*\([^\0]*?\)\n\s*_run_secondary/,
+      '_run_primary() ( echo "Error 429 Too Many Requests" >&2; exit 1 )\n   _run_secondary'
+    );
+    commandStr = commandStr.replace(
+      /_run_secondary\s*\(\)\s*\([^\0]*?\)\n\s*if \[ -f/,
+      '_run_secondary() ( echo "SECONDARY_SUCCESS" )\n   if [ -f'
+    );
+
+    const execResult = execSync('bash', { input: commandStr, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+    assert.ok(execResult.includes('SECONDARY_SUCCESS'), 'Secondary should execute successfully when primary fails');
   });
 });

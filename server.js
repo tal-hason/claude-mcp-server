@@ -12,7 +12,7 @@ import { buildCommand, MODE_NAMES } from './command-builder.js';
 
 const server = new McpServer({
   name: 'claude-cli',
-  version: '0.6.0',
+  version: '0.7.0',
   description: [
     'Claude CLI bridge — builds shell commands with mode defaults, EnMaaS gateway routing, and Vertex failover.',
     'Returns a command string for the agent to execute via Cursor Shell tool.',
@@ -31,6 +31,7 @@ server.tool(
     prompt: z.string().describe('The prompt to send to Claude'),
     mode: z.enum(MODE_NAMES).optional().describe('Dispatch mode: architect, planner, reviewer, explorer, executor.'),
     model: z.string().optional().describe('Exact model name (e.g. claude-opus-4-8, rits/zai-org/glm-5-3). Defaults to CLI default.'),
+    secondaryModel: z.string().optional().describe('Fallback model name for cross-provider failover (defaults to Sonnet).'),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort level.'),
     provider: z.enum(['auto', 'enmaas', 'vertex']).nullish().default('auto').describe('Inference provider: "auto" (default), "enmaas" (requires ENMAAS_KEY), or "vertex".'),
     primaryProject: z.string().optional().describe('Primary GCP project ID for Vertex AI execution.'),
