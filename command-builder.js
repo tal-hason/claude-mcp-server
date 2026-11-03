@@ -41,8 +41,8 @@ export function buildCommand(params) {
   primaryArgs.push(...shared);
 
   const failoverConfig = resolveFailoverConfig(provider, params, process.env);
-  const secModel = resolveSecondaryModel(params.model, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'claude-3-7-sonnet' : undefined);
-  const secEffort = supportsEffort(secModel || 'claude-3-7-sonnet') ? effort : null;
+  const secModel = resolveSecondaryModel(params.model, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
+  const secEffort = supportsEffort(secModel || 'sonnet') ? effort : null;
   const secondaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
   if (secModel) secondaryArgs.push('--model', shellQuote(secModel));
   if (secEffort) secondaryArgs.push('--effort', shellQuote(secEffort));
