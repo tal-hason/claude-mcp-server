@@ -37,25 +37,37 @@ jq 'del(.mcpServers["claude-cli"])' ~/.cursor/mcp.json > /tmp/mcp.json && mv /tm
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  Agent calls claude_prompt via MCP                           │
-│  → MCP server resolves mode defaults, builds shell command   │
-│  → Returns JSON { command, cwd }                             │
-│  → Agent executes command via Cursor Shell tool              │
-│  → Agent reads stream-json output from terminal file         │
+│  1. Agent calls claude_models to inspect available models   │
+│  2. Agent calls claude_prompt via MCP                        │
+│     → MCP server resolves mode defaults, builds command      │
+│     → Returns JSON { command, cwd }                          │
+│  3. Agent executes command via Shell tool                    │
+│  4. Formatted stream output renders in terminal              │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-1. Agent calls `claude_prompt` with prompt + optional mode/model/effort
-2. MCP server resolves mode defaults (effort, appended system prompt)
-3. Returns `{ command, cwd }` — a heredoc-based shell command
-4. Agent executes via Shell tool (`block_until_ms: 0` for long tasks)
-5. Agent reads the stream-json output from the terminal file
+1. Agent queries `claude_models` to verify available models for EnMaaS or Vertex AI projects.
+2. Agent calls `claude_prompt` with prompt + chosen mode/model/effort.
+3. MCP server resolves mode defaults (effort, appended system prompt, gateway routing).
+4. Returns `{ command, cwd }` — a heredoc-based shell command with ANSI stream formatting.
+5. Agent executes via Shell tool (`block_until_ms: 0` for long tasks).
 
 No child process management, no WebSocket bridge, no timeouts — the MCP server is a pure function.
 
 ## Usage
 
-Single tool: `claude_prompt`.
+Two tools:
+- **`claude_models`**: Discovers available models for EnMaaS and Vertex AI projects before dispatching.
+- **`claude_prompt`**: Builds the execution command with resolved mode defaults, routing, and failover.
+
+### Model discovery
+
+```
+CallMcpTool: user-claude-cli / claude_models
+{ "provider": "all" }
+```
+
+Returns real-time models for EnMaaS (e.g. `rits/zai-org/glm-5-3`, `rits/deepseek-ai/DeepSeek-V4.1-Flash-1017`) and supported Claude aliases (`sonnet`, `opus`, `haiku`) per Vertex AI project.
 
 ### Quick exploration
 

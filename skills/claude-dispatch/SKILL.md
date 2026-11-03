@@ -7,8 +7,16 @@ description: Dispatch subagent tasks to Claude Code CLI via claude-cli MCP serve
 
 Enables agents to dispatch tasks to Claude Code CLI via the `claude-cli` MCP server, supporting Red Hat EnMaaS AI Gateway routing, GCP Vertex AI, and automated budget failover.
 
-## 1. Core Tool: `claude_prompt`
+## 1. Core Tools
 
+### `claude_models` (Discovery)
+Call this tool **first** to discover active models and verify provider capabilities before dispatching:
+- Parameters:
+  - `provider` (string, optional): `"all"` (default), `"enmaas"`, or `"vertex"`.
+  - `project` (string, optional): Filter by specific GCP project ID for Vertex AI.
+- Returns real-time models for EnMaaS (e.g. `rits/zai-org/glm-5-3`, `rits/deepseek-ai/DeepSeek-V4.1-Flash-1017`) and supported Claude aliases/versions per Vertex AI project (`sonnet`, `opus`, `haiku`, etc.), including reasoning effort eligibility (`supportsEffort`).
+
+### `claude_prompt` (Command Builder)
 The `claude_prompt` tool acts as a pure command builder. It returns a JSON string with `{ command, cwd, description, block_until_ms }` to execute in the shell.
 
 ### Tool Parameters
@@ -45,11 +53,13 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 
 ## 3. Dispatch Protocol
 
-1. **Build Command**:
-   Call MCP tool `claude_prompt` with task parameters.
-2. **Parse Result**:
+1. **Discover & Verify Models**:
+   Call MCP tool `claude_models` first to discover available models for EnMaaS (`provider: "enmaas"`) or Vertex AI projects (`provider: "vertex"`). Select a verified model and check whether reasoning effort is supported.
+2. **Build Command**:
+   Call MCP tool `claude_prompt` with the verified `model` and appropriate mode/effort.
+3. **Parse Result**:
    Parse JSON text from `content[0].text` to extract `command`, `cwd`, and `block_until_ms`.
-3. **Execute via Shell**:
+4. **Execute via Shell**:
    Run `command` in `cwd` using the agent's shell execution tool with `block_until_ms: 0`.
 
 ## 4. Autonomous Agent Self-Configuration & Self-Healing Protocol ("Fix with Agent")
