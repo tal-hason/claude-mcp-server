@@ -1,8 +1,6 @@
 // claude-mcp-server/providers.js
 // @ai-rules: [Pattern]: Pure logic — gateway routing, env vars, and GCP project resolution. [Constraint]: Zero dependencies.
 
-export { resolveVertexFailoverConfig, buildVertexFailoverScript, buildFailoverScript } from './failover.js';
-
 export function resolveGcpProjects(params = {}, env = process.env) {
   const e = params.env || env || {};
   const primaryProject = params.project || params.primaryProject || e.VERTEX_PRIMARY_PROJECT || e.ANTHROPIC_VERTEX_PROJECT_ID || null;
@@ -30,10 +28,10 @@ export function resolveGcpProjects(params = {}, env = process.env) {
   };
 }
 
-export function resolveProvider(provider = 'auto', model = '') {
+export function resolveProvider(provider = 'auto', model = '', env = process.env) {
   if (provider && provider !== 'auto') return provider;
   const m = typeof model === 'string' ? model.toLowerCase() : '';
-  const matchEnmaas = m.startsWith('rits/') || m.includes('enmaas') || m.includes('claude-opus-5-5') || m.includes('claude-sonnet-5-5');
+  const matchEnmaas = m.startsWith('rits/') || m.includes('enmaas') || (Boolean(env?.ENMAAS_KEY) && (m.includes('claude-opus-5-5') || m.includes('claude-sonnet-5-5')));
   return matchEnmaas ? 'enmaas' : 'vertex';
 }
 

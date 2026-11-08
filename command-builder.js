@@ -23,8 +23,7 @@ export function buildCommand(params) {
   }
 
   const modeConfig = params.mode ? MODES[params.mode] : null;
-  const isLegacyExplorerTest = params.prompt === 'test' && params.mode === 'explorer' && !params.model;
-  const resolvedModel = params.model || (isLegacyExplorerTest ? undefined : modeConfig?.defaultModel);
+  const resolvedModel = params.model || modeConfig?.defaultModel;
   const model = resolvedModel || 'default';
   const effort = params.effort || modeConfig?.effort, appendPrompt = modeConfig?.appendSystemPrompt;
   const mode = params.mode || 'prompt';

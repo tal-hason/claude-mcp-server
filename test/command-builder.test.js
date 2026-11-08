@@ -85,7 +85,7 @@ describe('buildCommand - mode resolution', () => {
   });
 
   it('explorer mode sets effort to low', () => {
-    const result = buildCommand({ prompt: 'test', mode: 'explorer' });
+    const result = buildCommand({ prompt: 'test', mode: 'explorer', model: 'claude-3-5-sonnet' });
     const parsed = JSON.parse(result.content[0].text);
     assert.ok(parsed.command.includes("--effort 'low'"));
   });
@@ -558,7 +558,7 @@ describe('buildCommand - EnMaaS gateway routing and effort suppression', () => {
 
 describe('buildCommand & providers.js - Vertex multi-project budget failover', () => {
   it('T-19: resolveVertexFailoverConfig returns enabled: false by default when secondary project omitted', async () => {
-    const { resolveVertexFailoverConfig } = await getProviders();
+    const { resolveVertexFailoverConfig } = await getFailover();
     const config = resolveVertexFailoverConfig({ prompt: 'test' });
     assert.equal(config.enabled, false);
     const result = buildCommand({ prompt: 'test' });
