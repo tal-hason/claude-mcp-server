@@ -2,7 +2,7 @@
 // @ai-rules: [Pattern]: Model discovery for EnMaaS AI Gateway and GCP Vertex AI projects. [Constraint]: Pure logic & standard Node APIs.
 
 import fs from 'node:fs';
-import { supportsEffort } from './providers.js';
+import { supportsEffort, resolveGcpProjects } from './providers.js';
 
 export const VERTEX_MODELS = [
   { id: 'sonnet', name: 'Claude Sonnet (canonical alias / Sonnet 5)', effort: true, role: 'architect, reviewer, general' },
@@ -10,8 +10,8 @@ export const VERTEX_MODELS = [
   { id: 'haiku', name: 'Claude Haiku (canonical alias / Haiku 4.5)', effort: false, role: 'fast explorer, triage' },
   { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', effort: true, role: 'architect, reviewer' },
   { id: 'claude-opus-5', name: 'Claude Opus 5', effort: true, role: 'deep reasoning' },
-  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5 (Model Garden preview)', effort: true, role: 'pending GCP serving' },
-  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5 (Model Garden preview)', effort: true, role: 'pending GCP serving' },
+  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', effort: true, role: 'architect, reviewer, general' },
+  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', effort: true, role: 'deep complex reasoning' },
 ];
 
 export async function fetchEnmaasModels(options = {}) {
@@ -27,14 +27,25 @@ export async function fetchEnmaasModels(options = {}) {
     if (!res.ok) return { provider: 'enmaas', status: 'error', error: `HTTP ${res.status}: ${res.statusText}`, models: [] };
     const data = await res.json();
     const staticGateways = [
-      { id: 'claude-sonnet-5-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas' },
-      { id: 'claude-opus-5-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas' },
-      { id: 'claude-sonnet-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas' },
-      { id: 'claude-opus-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas' },
+      { id: 'claude-sonnet-5-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'frontier' },
+      { id: 'claude-opus-5-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'frontier' },
+      { id: 'claude-sonnet-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'standard' },
+      { id: 'claude-opus-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'frontier' },
+      { id: 'rits/zai-org/glm-5-3', owner: 'curvebender', supportsEffort: false, claudeCompatible: true, provider: 'enmaas', tier: 'free', cost: 'free' },
     ];
     const fetched = (data.data || []).map((m) => {
       const isCompat = m.id.startsWith('rits/') || m.id.startsWith('claude-');
-      return { id: m.id, owner: m.owned_by, supportsEffort: supportsEffort(m.id), claudeCompatible: isCompat, provider: 'enmaas' };
+      const isFree = m.id === 'rits/zai-org/glm-5-3' || m.id.includes('glm');
+      const isFrontier = m.id.includes('5-5') || m.id.includes('opus');
+      return {
+        id: m.id,
+        owner: m.owned_by,
+        supportsEffort: supportsEffort(m.id),
+        claudeCompatible: isCompat,
+        provider: 'enmaas',
+        cost: isFree ? 'free' : undefined,
+        tier: isFree ? 'free' : (isFrontier ? 'frontier' : 'standard'),
+      };
     });
     const seen = new Set(fetched.map((m) => m.id));
     const models = [...staticGateways.filter((g) => !seen.has(g.id)), ...fetched];
@@ -70,12 +81,14 @@ export async function getAvailableModels(params = {}, env = process.env) {
   }
   if (provider === 'all' || provider === 'vertex') {
     const projects = [];
-    const p1 = params.project || params.primaryProject || env.VERTEX_PRIMARY_PROJECT || env.ANTHROPIC_VERTEX_PROJECT_ID;
-    const c1 = params.credentials || params.primaryCredentials || env.VERTEX_PRIMARY_CREDENTIALS || env.GOOGLE_APPLICATION_CREDENTIALS;
-    if (p1) projects.push(listVertexProjectModels(p1, c1));
-    const p2 = params.secondaryProject || env.VERTEX_SECONDARY_PROJECT;
-    const c2 = params.secondaryCredentials || env.VERTEX_SECONDARY_CREDENTIALS;
-    if (p2 && p2 !== p1) projects.push(listVertexProjectModels(p2, c2));
+    const gcp = resolveGcpProjects(params, env);
+    if (gcp.primaryProject) projects.push(listVertexProjectModels(gcp.primaryProject, gcp.primaryCredentials));
+    if (gcp.secondaryProject && gcp.secondaryProject !== gcp.primaryProject) {
+      projects.push(listVertexProjectModels(gcp.secondaryProject, gcp.secondaryCredentials));
+    }
+    if (gcp.tertiaryProject && gcp.tertiaryProject !== gcp.primaryProject && gcp.tertiaryProject !== gcp.secondaryProject) {
+      projects.push(listVertexProjectModels(gcp.tertiaryProject, gcp.tertiaryCredentials));
+    }
     if (projects.length === 0) projects.push(listVertexProjectModels(null, null));
     result.vertex = { provider: 'vertex', projects };
   }

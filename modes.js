@@ -1,12 +1,13 @@
 // claude-mcp-server/modes.js
 // @ai-rules:
 // 1. [Constraint]: Pure data — no side effects, no I/O. Exports mode definitions only.
-// 2. [Pattern]: Each mode defines { effort, appendSystemPrompt }. Model is NOT pinned per mode.
+// 2. [Pattern]: Each mode defines { defaultModel, effort, appendSystemPrompt }.
 // 3. [Pattern]: Generic role names (architect, reviewer, explorer) — not pipeline-stage names.
 //    Cursor pipeline mapping lives in ~/.cursor/rules/claude-dispatch.mdc, not here.
 
 export const MODES = {
   architect: {
+    defaultModel: 'claude-sonnet-5-5',
     effort: 'high',
     appendSystemPrompt: [
       'You are consulting as a senior systems architect.',
@@ -17,6 +18,7 @@ export const MODES = {
   },
 
   planner: {
+    defaultModel: 'claude-sonnet-5-5',
     effort: 'high',
     appendSystemPrompt: [
       'You are creating or evaluating an implementation plan.',
@@ -26,6 +28,7 @@ export const MODES = {
   },
 
   reviewer: {
+    defaultModel: 'claude-opus-5-5',
     effort: 'max',
     appendSystemPrompt: [
       'You are a principal code reviewer.',
@@ -36,6 +39,7 @@ export const MODES = {
   },
 
   explorer: {
+    defaultModel: 'rits/zai-org/glm-5-3',
     effort: 'low',
     appendSystemPrompt: [
       'You are doing quick research.',
@@ -45,6 +49,7 @@ export const MODES = {
   },
 
   executor: {
+    defaultModel: 'claude-sonnet-5-5',
     effort: 'high',
     appendSystemPrompt: [
       'You are implementing code changes.',

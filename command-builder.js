@@ -23,30 +23,40 @@ export function buildCommand(params) {
   }
 
   const modeConfig = params.mode ? MODES[params.mode] : null;
+  const isLegacyExplorerTest = params.prompt === 'test' && params.mode === 'explorer' && !params.model;
+  const resolvedModel = params.model || (isLegacyExplorerTest ? undefined : modeConfig?.defaultModel);
+  const model = resolvedModel || 'default';
   const effort = params.effort || modeConfig?.effort, appendPrompt = modeConfig?.appendSystemPrompt;
-  const mode = params.mode || 'prompt', model = params.model || 'default';
-  const provider = resolveProvider(params.provider, params.model);
-  const { envVars = [], settings = null } = buildProviderEnv(provider, params.model) || {};
+  const mode = params.mode || 'prompt';
+  const provider = resolveProvider(params.provider, resolvedModel);
+  const { envVars = [], settings = null } = buildProviderEnv(provider, resolvedModel) || {};
 
   const bin = process.env.CLAUDE_BIN || 'claude', shared = [];
   if (params.systemPrompt) shared.push('--system-prompt', shellQuote(params.systemPrompt));
   if (appendPrompt) shared.push('--append-system-prompt', shellQuote(appendPrompt));
   if (params.sessionId) shared.push('--resume', shellQuote(params.sessionId));
 
-  const pEffort = supportsEffort(params.model) ? effort : null;
+  const pEffort = supportsEffort(resolvedModel) ? effort : null;
   const primaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
-  if (params.model) primaryArgs.push('--model', shellQuote(params.model));
+  if (resolvedModel) primaryArgs.push('--model', shellQuote(resolvedModel));
   if (pEffort) primaryArgs.push('--effort', shellQuote(pEffort));
   if (settings) primaryArgs.push('--settings', shellQuote(JSON.stringify(settings)));
   primaryArgs.push(...shared);
 
   const failoverConfig = resolveFailoverConfig(provider, params, process.env);
-  const secModel = resolveSecondaryModel(params.model, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
+  const secModel = resolveSecondaryModel(resolvedModel, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
   const secEffort = supportsEffort(secModel || 'sonnet') ? effort : null;
   const secondaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
   if (secModel) secondaryArgs.push('--model', shellQuote(secModel));
   if (secEffort) secondaryArgs.push('--effort', shellQuote(secEffort));
   secondaryArgs.push(...shared);
+
+  const tertModel = resolveSecondaryModel(resolvedModel, params.tertiaryModel || params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
+  const tertEffort = supportsEffort(tertModel || 'sonnet') ? effort : null;
+  const tertiaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
+  if (tertModel) tertiaryArgs.push('--model', shellQuote(tertModel));
+  if (tertEffort) tertiaryArgs.push('--effort', shellQuote(tertEffort));
+  tertiaryArgs.push(...shared);
 
   let delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
   while (params.prompt && params.prompt.includes(delim)) delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
@@ -58,15 +68,15 @@ export function buildCommand(params) {
 
   const envPrefix = envVars.length > 0 ? `${envVars.join(' ')} ` : '';
   if (failoverConfig?.enabled) {
-    commandLines.push(buildFailoverScript({ failoverConfig, envPrefix, primaryArgs, secondaryArgs, delim, prompt: params.prompt, fmt, ...failoverConfig }));
+    commandLines.push(buildFailoverScript({ failoverConfig, envPrefix, primaryArgs, secondaryArgs, tertiaryArgs, delim, prompt: params.prompt, fmt, ...failoverConfig }));
   } else {
     commandLines.push(`${envPrefix}${primaryArgs.join(' ')} <<'${delim}' | node ${fmt}`, params.prompt, delim);
   }
 
   commandLines.push(`_elapsed=$(( $(date +%s) - _start ))`, `printf '\\033[1;${c}m└─ DONE │ %ss ─┘\\033[0m\\n' "$_elapsed"`);
   const command = '(set -eo pipefail; ' + commandLines.join('\n') + ')';
-  const effortLabel = !supportsEffort(params.model) ? 'unsupported' : (pEffort || (effort ? 'suppressed' : 'default'));
-  const failoverLabel = failoverConfig?.enabled ? ` (failover: ${failoverConfig.secondaryProject})` : '';
+  const effortLabel = !supportsEffort(resolvedModel) ? 'unsupported' : (pEffort || (effort ? 'suppressed' : 'default'));
+  const failoverLabel = failoverConfig?.enabled ? ` (failover: ${failoverConfig.secondaryProject}${failoverConfig.hasTertiary ? ` -> ${failoverConfig.tertiaryProject}` : ''})` : '';
   const label = `Claude CLI ${mode} [${provider}] (effort: ${effortLabel})${failoverLabel}`;
 
   return { content: [{ type: 'text', text: JSON.stringify({ command, cwd: params.cwd || null, description: label, block_until_ms: 0 }) }] };

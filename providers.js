@@ -1,7 +1,34 @@
 // claude-mcp-server/providers.js
-// @ai-rules: [Pattern]: Pure logic — gateway routing and env vars. [Constraint]: Zero dependencies.
+// @ai-rules: [Pattern]: Pure logic — gateway routing, env vars, and GCP project resolution. [Constraint]: Zero dependencies.
 
 export { resolveVertexFailoverConfig, buildVertexFailoverScript, buildFailoverScript } from './failover.js';
+
+export function resolveGcpProjects(params = {}, env = process.env) {
+  const e = params.env || env || {};
+  const primaryProject = params.project || params.primaryProject || e.VERTEX_PRIMARY_PROJECT || e.ANTHROPIC_VERTEX_PROJECT_ID || null;
+  const primaryCredentials = params.credentials || params.primaryCredentials || e.VERTEX_PRIMARY_CREDENTIALS || e.VERTEX_CREDENTIALS || e.GOOGLE_APPLICATION_CREDENTIALS || null;
+
+  const explicitPrimaryProject = params.project || params.primaryProject || e.VERTEX_PRIMARY_PROJECT || null;
+  const explicitPrimaryCredentials = params.credentials || params.primaryCredentials || e.VERTEX_PRIMARY_CREDENTIALS || e.VERTEX_CREDENTIALS || null;
+
+  const secondaryProject = params.secondaryProject || e.VERTEX_SECONDARY_PROJECT || null;
+  const secondaryCredentials = params.secondaryCredentials || e.VERTEX_SECONDARY_CREDENTIALS || null;
+
+  const tertiaryProject = params.tertiaryProject || e.VERTEX_TERTIARY_PROJECT || e.VERTEX_FALLBACK_PROJECT || null;
+  const tertiaryCredentials = params.tertiaryCredentials || e.VERTEX_TERTIARY_CREDENTIALS || e.VERTEX_FALLBACK_CREDENTIALS || null;
+
+  return {
+    primaryProject,
+    primaryCredentials,
+    explicitPrimaryProject,
+    explicitPrimaryCredentials,
+    secondaryProject,
+    secondaryCredentials,
+    tertiaryProject,
+    tertiaryCredentials,
+    hasTertiary: Boolean(tertiaryProject),
+  };
+}
 
 export function resolveProvider(provider = 'auto', model = '') {
   if (provider && provider !== 'auto') return provider;
