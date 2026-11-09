@@ -18,15 +18,16 @@ export function shellQuote(s) {
 }
 
 export function buildCommand(params, env = process.env) {
-  const totalBytes = Buffer.byteLength(params.prompt || '') + Buffer.byteLength(params.systemPrompt || '');
+  const modeConfig = params.mode ? MODES[params.mode] : null;
+  const appendPrompt = modeConfig?.appendSystemPrompt;
+  const totalBytes = Buffer.byteLength(params.prompt || '') + Buffer.byteLength(params.systemPrompt || '') + Buffer.byteLength(appendPrompt || '');
   if (totalBytes > MAX_PROMPT_BYTES) {
     return { content: [{ type: 'text', text: 'Error: prompt exceeds 100KB.' }], isError: true };
   }
 
-  const modeConfig = params.mode ? MODES[params.mode] : null;
   const resolvedModel = params.model || getModeDefaultModel(params.mode, env, params.provider);
   const model = resolvedModel || 'default';
-  const effort = params.effort || modeConfig?.effort, appendPrompt = modeConfig?.appendSystemPrompt;
+  const effort = params.effort || modeConfig?.effort;
   const mode = params.mode || 'prompt';
   const provider = resolveProvider(params.provider, resolvedModel, env);
   const { envVars = [], settings = null } = buildProviderEnv(provider, resolvedModel) || {};
@@ -36,33 +37,32 @@ export function buildCommand(params, env = process.env) {
   if (appendPrompt) shared.push('--append-system-prompt', shellQuote(appendPrompt));
   if (params.sessionId) shared.push('--resume', shellQuote(params.sessionId));
 
+  const makeTierArgs = (m, e, s) => {
+    const a = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
+    if (m) a.push('--model', shellQuote(m));
+    if (e) a.push('--effort', shellQuote(e));
+    if (s) a.push('--settings', shellQuote(JSON.stringify(s)));
+    a.push(...shared);
+    return a;
+  };
+
   const pEffort = supportsEffort(resolvedModel) ? effort : null;
-  const primaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
-  if (resolvedModel) primaryArgs.push('--model', shellQuote(resolvedModel));
-  if (pEffort) primaryArgs.push('--effort', shellQuote(pEffort));
-  if (settings) primaryArgs.push('--settings', shellQuote(JSON.stringify(settings)));
-  primaryArgs.push(...shared);
+  const primaryArgs = makeTierArgs(resolvedModel, pEffort, settings);
 
   const failoverConfig = resolveFailoverConfig(provider, params, env);
   const secModel = resolveSecondaryModel(resolvedModel, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
   const secEffort = supportsEffort(secModel || 'sonnet') ? effort : null;
-  const secondaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
-  if (secModel) secondaryArgs.push('--model', shellQuote(secModel));
-  if (secEffort) secondaryArgs.push('--effort', shellQuote(secEffort));
-  secondaryArgs.push(...shared);
+  const secondaryArgs = makeTierArgs(secModel, secEffort);
 
   const tertModel = resolveSecondaryModel(resolvedModel, params.tertiaryModel || params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
   const tertEffort = supportsEffort(tertModel || 'sonnet') ? effort : null;
-  const tertiaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
-  if (tertModel) tertiaryArgs.push('--model', shellQuote(tertModel));
-  if (tertEffort) tertiaryArgs.push('--effort', shellQuote(tertEffort));
-  secondaryArgs.push(...shared);
+  const tertiaryArgs = makeTierArgs(tertModel, tertEffort);
 
   let delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
   while (params.prompt && params.prompt.includes(delim)) delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
 
   const c = { architect: '35', reviewer: '31', planner: '34', explorer: '32', executor: '33' }[mode] || '37', fmt = shellQuote(FORMATTER_PATH);
-  const commandLines = [`_start=$(date +%s)`];
+  const commandLines = [`_start=$(date +%s)`, `[ -f ${fmt} ] || { echo "[claude-mcp] Error: Formatter not found at ${fmt}" >&2; exit 1; }`];
   if (params.cwd) commandLines.push(`cd ${shellQuote(params.cwd)} || exit 1`);
   commandLines.push(`printf '\\033[1;${c}m┌─ %s │ %s │ %s ─┐\\033[0m\\n' ${shellQuote(mode.toUpperCase())} ${shellQuote(model)} "$(date +%H:%M:%S)"`);
 

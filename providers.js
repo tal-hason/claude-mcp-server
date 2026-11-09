@@ -3,11 +3,11 @@
 
 export function resolveGcpProjects(params = {}, env = process.env) {
   const e = env || process.env || {};
-  const primaryProject = params.project || params.primaryProject || e.VERTEX_PRIMARY_PROJECT || e.ANTHROPIC_VERTEX_PROJECT_ID || null;
-  const primaryCredentials = params.credentials || params.primaryCredentials || e.VERTEX_PRIMARY_CREDENTIALS || e.VERTEX_CREDENTIALS || e.GOOGLE_APPLICATION_CREDENTIALS || null;
+  const primaryProject = params.primaryProject || e.VERTEX_PRIMARY_PROJECT || e.ANTHROPIC_VERTEX_PROJECT_ID || null;
+  const primaryCredentials = params.primaryCredentials || e.VERTEX_PRIMARY_CREDENTIALS || e.VERTEX_CREDENTIALS || e.GOOGLE_APPLICATION_CREDENTIALS || null;
 
-  const explicitPrimaryProject = params.project || params.primaryProject || e.VERTEX_PRIMARY_PROJECT || null;
-  const explicitPrimaryCredentials = params.credentials || params.primaryCredentials || e.VERTEX_PRIMARY_CREDENTIALS || e.VERTEX_CREDENTIALS || null;
+  const explicitPrimaryProject = params.primaryProject || e.VERTEX_PRIMARY_PROJECT || null;
+  const explicitPrimaryCredentials = params.primaryCredentials || e.VERTEX_PRIMARY_CREDENTIALS || e.VERTEX_CREDENTIALS || null;
 
   const secondaryProject = params.secondaryProject || e.VERTEX_SECONDARY_PROJECT || null;
   const secondaryCredentials = params.secondaryCredentials || e.VERTEX_SECONDARY_CREDENTIALS || null;

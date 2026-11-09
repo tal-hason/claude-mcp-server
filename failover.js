@@ -17,9 +17,8 @@ export function resolveFailoverConfig(provider = 'vertex', params = {}, env = pr
   let tertProj = gcp.tertiaryProject, tertCreds = gcp.tertiaryCredentials;
 
   if (isEnmaas) {
-    if (!secProj && tertProj) {
-      secProj = tertProj; secCreds = tertCreds; tertProj = undefined; tertCreds = undefined;
-    } else if (secProj && tertProj === secProj) { tertProj = undefined; tertCreds = undefined; }
+    if (!secProj && tertProj) { secProj = tertProj; secCreds = tertCreds; tertProj = undefined; tertCreds = undefined; }
+    else if (secProj && tertProj === secProj) { tertProj = undefined; tertCreds = undefined; }
     if (!secProj) return { enabled: false, hasTertiary: false };
     return {
       enabled: true, type: 'cross-provider', primaryProvider: 'enmaas', secondaryProvider: 'vertex',
@@ -57,7 +56,9 @@ export function buildVertexFailoverScript({
   const c1 = primaryCredentials ? quote(primaryCredentials) : "''", c2 = secondaryCredentials ? quote(secondaryCredentials) : "''";
   const markerName = `failover_${(primaryProject || 'p1').replace(/[^a-zA-Z0-9_-]/g, '_')}_${(secondaryProject || 'p2').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
   const preamble = `   _run_claude() { local p="$1"; local c="$2"; [ -n "$p" ] && export ANTHROPIC_VERTEX_PROJECT_ID="$p" CLOUDSDK_CORE_PROJECT="$p"\n` +
-    `     [ -n "$c" ] && export GOOGLE_APPLICATION_CREDENTIALS="$c"; ${envPrefix}${args.join(' ')} < "$_pfile" | node ${fmt}\n   }`;
+    `     [ -n "$c" ] && export GOOGLE_APPLICATION_CREDENTIALS="$c"; export CLAUDE_CODE_USE_VERTEX=1\n` +
+    `     unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ENMAAS_KEY ENMAAS_BASE_URL CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\n` +
+    `     ${envPrefix}${args.join(' ')} < "$_pfile" | node ${fmt}\n   }`;
   return _buildDualSubshellScript({
     markerName, preamble, runPrimary: `_run_claude ${p1} ${c1}`, runSecondary: `_run_claude ${p2} ${c2}`, delim, prompt, sysPrompt,
   });

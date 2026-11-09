@@ -215,3 +215,117 @@ describe('Darwin Remediation - N-6: Ambient Polluted Environment Immunity', () =
     assert.ok(parsed.command);
   });
 });
+
+describe('Darwin Remediation - N-12: Deduplicated Tier Args with System Prompt and Resume', () => {
+  it('ensures tertiaryArgs contains --system-prompt and --resume flags matching secondary (N-12)', () => {
+    const res = buildCommand({
+      prompt: 'test prompt',
+      mode: 'reviewer',
+      provider: 'enmaas',
+      systemPrompt: 'custom system prompt',
+      sessionId: 'sess-12345',
+      secondaryProject: 'proj-sec',
+      tertiaryProject: 'proj-tert',
+    }, { ENMAAS_KEY: 'test-key' });
+
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+
+    const t3Match = cmd.match(/_run_tier3\s*\(\)\s*\(([\s\S]*?)\n\s*\)/);
+    assert.ok(t3Match, '_run_tier3 must be defined');
+    const t3Body = t3Match[1];
+    assert.ok(t3Body.includes('--system-prompt'), 'tier 3 must include --system-prompt');
+    assert.ok(t3Body.includes('--resume'), 'tier 3 must include --resume');
+    assert.ok(t3Body.includes("'sess-12345'"), 'tier 3 must include sessionId');
+  });
+});
+
+describe('Darwin Remediation - F-8: Stderr Secret Redaction', () => {
+  it('redacts Authorization: Bearer, Proxy-Authorization, ENMAAS_KEY, private_key_id, and PEM bodies (F-8)', () => {
+    const testCases = [
+      'Authorization: Bearer my-secret-token-abc',
+      'Proxy-Authorization: Basic dXNlcjpwYXNz',
+      'ENMAAS_KEY=secret_key_123',
+      'TOKEN: "top-secret-token"',
+      'private_key_id: "pk-987654321"',
+      '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----',
+    ];
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-redact-'));
+    const mockBin = path.join(tmpDir, 'mock-err.sh');
+    const errText = testCases.join('\n');
+    fs.writeFileSync(mockBin, `#!/bin/bash\ncat <<'EOF' >&2\n${errText}\nEOF\nexit 1\n`, { mode: 0o755 });
+
+    try {
+      const res = buildCommand({
+        prompt: 'test redaction',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      let stderrOutput = '';
+      try {
+        execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        stderrOutput = err.stderr ? err.stderr.toString() : '';
+      }
+
+      assert.ok(!stderrOutput.includes('my-secret-token-abc'), 'bearer token must be redacted');
+      assert.ok(!stderrOutput.includes('dXNlcjpwYXNz'), 'proxy auth credentials must be redacted');
+      assert.ok(!stderrOutput.includes('secret_key_123'), 'ENMAAS_KEY must be redacted');
+      assert.ok(!stderrOutput.includes('top-secret-token'), 'TOKEN must be redacted');
+      assert.ok(!stderrOutput.includes('pk-987654321'), 'private_key_id must be redacted');
+      assert.ok(!stderrOutput.includes('MIIEowIBAAKCAQEA0'), 'PEM body must be redacted');
+      assert.ok(stderrOutput.includes('[REDACTED_PEM]'), 'PEM replacement marker must be present');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Darwin Remediation - N-2: Linear Non-Looping Cascade Bounded Invocations', () => {
+  it('makes at most 3 invocations when all tiers fail and terminates without looping (N-2)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-invoke-'));
+    const countFile = path.join(tmpDir, 'count.txt');
+    fs.writeFileSync(countFile, '0');
+    const mockBin = path.join(tmpDir, 'mock-count.sh');
+    fs.writeFileSync(mockBin, `#!/bin/bash
+COUNT=$(cat "${countFile}")
+echo $((COUNT + 1)) > "${countFile}"
+echo "HTTP 500 Internal Error" >&2
+exit 1
+`, { mode: 0o755 });
+
+    try {
+      const res = buildCommand({
+        prompt: 'test linear cascade',
+        mode: 'executor',
+        provider: 'enmaas',
+        secondaryProject: 'proj-sec',
+        tertiaryProject: 'proj-tert',
+      }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      try {
+        execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, XDG_RUNTIME_DIR: tmpDir, ENMAAS_KEY: 'test-key' },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (_) {}
+
+      const totalCalls = parseInt(fs.readFileSync(countFile, 'utf8').trim(), 10);
+      assert.ok(totalCalls <= 3, `Expected <= 3 invocations, got ${totalCalls}`);
+      assert.equal(totalCalls, 3, 'Must attempt exactly Tier 1, Tier 2, Tier 3 before final exit');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});

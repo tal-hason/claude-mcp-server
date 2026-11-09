@@ -1,5 +1,8 @@
 // claude-mcp-server/modes.js
-// @ai-rules: [Constraint]: Pure data — no side effects, no I/O. <= 100 lines.
+// @ai-rules:
+// 1. [Constraint]: Pure definitions — no side effects, no I/O. <= 100 lines.
+// 2. [Pattern]: Each mode defines { defaultModel, effort, appendSystemPrompt }.
+// 3. [Pattern]: Generic role names (architect, reviewer, explorer) — not pipeline-stage names.
 
 export const MODES = {
   architect: {

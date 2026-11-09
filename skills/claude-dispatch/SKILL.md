@@ -43,7 +43,7 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 ### Red Hat EnMaaS AI Gateway & 3-Tier Cascade Failover
 - Gateway URL: Configured via `ENMAAS_BASE_URL` (defaults to `https://api.enmaas.example.com`).
 - Authentication: `ENMAAS_KEY` environment variable (required when routing to EnMaaS).
-- **Process Environment & Security Boundary (CR-01 & CR-03)**:
+- **Process Environment & Security Boundary**:
   - `ENMAAS_KEY` must be exported in the user's shell environment or profile (e.g. `~/.bashrc`, `~/.zshrc`) so that the agent Shell tool inherits the credential during command execution.
   - **Security Warning**: Avoid passing raw tokens via CLI arguments (`--enmaas-key <secret>`) in multi-user or shared environments, as arguments are visible in process tables (`ps aux`, `/proc/$pid/cmdline`). Always prefer setting `export ENMAAS_KEY="<token>"` in the shell environment.
 - Auto-routed models: `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/*`, or when `provider: "enmaas"` is explicitly set.
@@ -52,9 +52,9 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
   - **Tier 1 (EnMaaS)**: Primary inference through EnMaaS gateway.
   - **Tier 2 (Vertex Secondary)**: Triggered on EnMaaS transient outages (429, 502, 503, 504, connection timeouts) with Sonnet fallback and clean environment sanitization (`UNSET_GW`).
   - **Tier 3 (Vertex Tertiary)**: Triggered if Tier 2 experiences quota exhaustion, project budget exhaustion, or IAM authorization failure.
-  - **Prompt Efficiency**: Prompts are written once to a private subshell temp file (`$_pfile`) and piped via stdin redirection (`< "$_pfile"`), preventing command-line argument length (`E2BIG`) overflow.
+  - **Prompt Efficiency**: Prompts and system prompts are written once to private subshell temp files (`$_pfile`, `$_spfile`) and piped via stdin or file redirection, preventing command-line argument length (`E2BIG`) overflow.
   - **Sticky Failover**: Success on a fallback tier drops a sticky marker in `_marker_dir` (backed by `XDG_RUNTIME_DIR` or `/tmp`) to fast-path subsequent runs without repeating failed tiers. Success on Tier 1 clears fallback markers.
-  - **Security Redaction**: Stderr streams pipe through automated redaction filtering Bearer, Basic, `sk-ant-`, `ya29.`, and sensitive tokens.
+  - **Security Redaction**: Stderr error logs pipe through automated redaction filtering Bearer, Basic, Proxy-Authorization, private_key_id, ENMAAS_KEY, PEM certificates, sk-ant-, ya29., and sensitive tokens before emitting to stderr. Stdout output is buffered and emitted unmodified on success.
 
 ### Google Cloud Vertex AI
 - Default provider for standard Claude models (`claude-sonnet-4-6`, `claude-opus-4-8`).

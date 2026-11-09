@@ -109,9 +109,9 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
   - Process timeouts: Exit code 124 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
 - **User Error Veto**: HTTP 400, 401, 403, and `invalid_request_error` immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
 - **Shared-Quota Bypass (Cross-Provider)**: When Tier 1 (EnMaaS) exhausts shared enterprise quota (429), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
-- **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted (`F-17`) to prevent redundant invocations against the same project quota.
-- **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` is capped at 100KB (`F-1r`) to prevent argument buffer overflow and enforce clean stdin streaming via temporary files (`E2BIG` prevention).
-- **Automated Stderr Redaction**: All error logs and terminal failure outputs are filtered through stream-level `sed -E` redaction (`F-21`) to strip Bearer tokens, Basic auth, API keys, JWTs, and PEM certificate blocks prior to emitting to stderr.
+- **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted to prevent redundant invocations against the same project quota.
+- **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` (and any mode-appended prompt) is capped at 100KB to prevent argument buffer overflow and enforce clean streaming via temporary files (`E2BIG` prevention).
+- **Automated Stderr Redaction**: All error logs and terminal failure outputs are filtered through stream-level `sed -E` redaction to strip Bearer tokens, Basic auth, API keys, JWTs, and PEM certificate blocks prior to emitting to stderr. Redaction applies strictly to stderr error logs; successful model output on stdout is buffered and delivered unmodified.
 
 ### Parameters
 
