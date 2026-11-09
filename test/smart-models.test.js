@@ -6,36 +6,11 @@ import assert from 'node:assert/strict';
 import { fetchEnmaasModels, VERTEX_MODELS } from '../models.js';
 import { MODES } from '../modes.js';
 import { buildCommand } from '../command-builder.js';
-const TRACKED_ENV_VARS = [
-  'CLAUDE_BIN', 'ENMAAS_KEY', 'ENMAAS_BASE_URL',
-  'VERTEX_PRIMARY_PROJECT', 'VERTEX_PRIMARY_CREDENTIALS',
-  'VERTEX_SECONDARY_PROJECT', 'VERTEX_SECONDARY_CREDENTIALS',
-  'VERTEX_TERTIARY_PROJECT', 'VERTEX_TERTIARY_CREDENTIALS',
-  'VERTEX_FALLBACK_PROJECT', 'VERTEX_FALLBACK_CREDENTIALS',
-  'ANTHROPIC_VERTEX_PROJECT_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
-  'CLOUDSDK_CORE_PROJECT', 'XDG_RUNTIME_DIR'
-];
+import { createEnvScrubber } from './helpers/env.js';
 
-let savedEnv = {};
-beforeEach(() => {
-  savedEnv = {};
-  for (const k of TRACKED_ENV_VARS) {
-    if (k in process.env) {
-      savedEnv[k] = process.env[k];
-      delete process.env[k];
-    }
-  }
-});
-
-afterEach(() => {
-  for (const k of TRACKED_ENV_VARS) {
-    if (k in savedEnv) {
-      process.env[k] = savedEnv[k];
-    } else {
-      delete process.env[k];
-    }
-  }
-});
+const scrubber = createEnvScrubber();
+beforeEach(() => scrubber.scrub());
+afterEach(() => scrubber.restore());
 
 
 describe('ATDD Layer 1: Model Discovery & Capabilities (models.js)', () => {

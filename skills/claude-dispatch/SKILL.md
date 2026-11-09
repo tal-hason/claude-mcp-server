@@ -83,8 +83,10 @@ Agents can autonomously configure, verify, and heal `claude-cli` MCP server sett
    - Verify GCP credentials: `gcloud auth print-access-token`.
    - Verify EnMaaS token: `curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ENMAAS_KEY" "${ENMAAS_BASE_URL:-https://api.enmaas.example.com}/v1/models"`.
 3. **Apply Configuration**:
-   Execute deterministic CLI setup:
+   Execute deterministic CLI setup (exporting `ENMAAS_KEY` in environment to prevent process argument exposure):
    ```bash
+   export ENMAAS_KEY="<ENMAAS_TOKEN>"
+
    ./setup.sh --configure \
      --primary-project "<PROJECT_P1>" \
      --secondary-project "<PROJECT_P2>" \
@@ -92,8 +94,7 @@ Agents can autonomously configure, verify, and heal `claude-cli` MCP server sett
      --primary-credentials "<PATH_TO_SA1>" \
      --secondary-credentials "<PATH_TO_SA2>" \
      --tertiary-credentials "<PATH_TO_SA3>" \
-     --gateway-url "<ENMAAS_GATEWAY_URL>" \
-     --enmaas-key "<ENMAAS_TOKEN>"
+     --gateway-url "<ENMAAS_GATEWAY_URL>"
    ```
 4. **Verify Handshake**:
    Test MCP JSON-RPC transport:

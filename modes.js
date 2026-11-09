@@ -1,9 +1,5 @@
 // claude-mcp-server/modes.js
-// @ai-rules:
-// 1. [Constraint]: Pure data — no side effects, no I/O. Exports mode definitions only.
-// 2. [Pattern]: Each mode defines { defaultModel, effort, appendSystemPrompt }.
-// 3. [Pattern]: Generic role names (architect, reviewer, explorer) — not pipeline-stage names.
-//    Cursor pipeline mapping lives in ~/.cursor/rules/claude-dispatch.mdc, not here.
+// @ai-rules: [Constraint]: Pure data — no side effects, no I/O. <= 100 lines.
 
 export const MODES = {
   architect: {
@@ -60,3 +56,10 @@ export const MODES = {
 };
 
 export const MODE_NAMES = Object.keys(MODES);
+
+export function getModeDefaultModel(mode, env = process.env, provider = null) {
+  if (mode === 'explorer' && (provider === 'vertex' || !env?.ENMAAS_KEY)) {
+    return 'claude-sonnet-5-5';
+  }
+  return MODES[mode]?.defaultModel;
+}

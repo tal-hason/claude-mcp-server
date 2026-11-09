@@ -1,7 +1,7 @@
 // claude-mcp-server/failover.js
 // @ai-rules: [Pattern]: Failover controller for intra-Vertex, cross-provider, and cascade. [Constraint]: Pure logic, <= 100 lines.
 
-import { resolveGcpProjects } from './providers.js';
+import { resolveGcpProjects, resolveProvider } from './providers.js';
 import { quote, _buildDualSubshellScript, _buildCascadeScript } from './failover-scripts.js';
 
 export { _buildDualSubshellScript, _buildCascadeScript } from './failover-scripts.js';
@@ -11,32 +11,35 @@ export function resolveFailoverConfig(provider = 'vertex', params = {}, env = pr
     env = (params && Object.keys(params).length > 0) ? params : (env || process.env);
     params = provider; provider = params.provider || 'vertex';
   }
-  const isEnmaas = provider === 'enmaas' || (params.model?.startsWith('rits/') || params.model?.includes('enmaas'));
+  const isEnmaas = resolveProvider(provider, params.model, env) === 'enmaas';
   const gcp = resolveGcpProjects(params, env);
-  const secProj = gcp.secondaryProject || gcp.explicitPrimaryProject;
-  const secCreds = gcp.secondaryCredentials || gcp.primaryCredentials;
+  let secProj = gcp.secondaryProject || gcp.explicitPrimaryProject, secCreds = gcp.secondaryCredentials || gcp.primaryCredentials;
+  let tertProj = gcp.tertiaryProject, tertCreds = gcp.tertiaryCredentials;
 
   if (isEnmaas) {
-    const finalSec = secProj || gcp.tertiaryProject;
-    if (!finalSec) return { enabled: false, hasTertiary: false };
+    if (!secProj && tertProj) {
+      secProj = tertProj; secCreds = tertCreds; tertProj = undefined; tertCreds = undefined;
+    } else if (secProj && tertProj === secProj) { tertProj = undefined; tertCreds = undefined; }
+    if (!secProj) return { enabled: false, hasTertiary: false };
     return {
       enabled: true, type: 'cross-provider', primaryProvider: 'enmaas', secondaryProvider: 'vertex',
-      secondaryProject: finalSec, secondaryCredentials: secProj ? secCreds : gcp.tertiaryCredentials,
-      tertiaryProject: secProj ? gcp.tertiaryProject : undefined,
-      tertiaryCredentials: secProj ? gcp.tertiaryCredentials : undefined,
-      hasTertiary: Boolean(secProj && gcp.tertiaryProject),
+      secondaryProject: secProj, secondaryCredentials: secCreds,
+      tertiaryProject: tertProj || undefined, tertiaryCredentials: tertProj ? tertCreds : undefined,
+      hasTertiary: Boolean(tertProj),
     };
   }
 
   const p1 = gcp.primaryProject;
-  const p2 = gcp.secondaryProject || (p1 !== gcp.tertiaryProject ? gcp.tertiaryProject : undefined);
-  const p3 = (gcp.secondaryProject && gcp.tertiaryProject) ? gcp.tertiaryProject : undefined;
+  let p2 = gcp.secondaryProject, p3 = gcp.tertiaryProject;
+  if (p2 === p1) p2 = undefined;
+  if (!p2 && p3 && p3 !== p1) { p2 = p3; p3 = undefined; }
+  if (p3 === p1 || p3 === p2) p3 = undefined;
+
+  const p2Creds = p2 === gcp.tertiaryProject ? gcp.tertiaryCredentials : (gcp.secondaryCredentials || gcp.primaryCredentials);
   return {
     enabled: Boolean((p2 && p1 && p2 !== p1) || p3), type: 'vertex', primaryProject: p1, secondaryProject: p2,
-    primaryCredentials: gcp.primaryCredentials,
-    secondaryCredentials: p2 === gcp.tertiaryProject ? gcp.tertiaryCredentials : gcp.secondaryCredentials,
-    tertiaryProject: p3, tertiaryCredentials: gcp.tertiaryCredentials,
-    hasTertiary: Boolean(p3),
+    primaryCredentials: gcp.primaryCredentials, secondaryCredentials: p2Creds,
+    tertiaryProject: p3, tertiaryCredentials: p3 ? gcp.tertiaryCredentials : undefined, hasTertiary: Boolean(p3),
   };
 }
 
@@ -48,7 +51,7 @@ export function resolveSecondaryModel(primaryModel, secondaryModel) {
 }
 
 export function buildVertexFailoverScript({
-  envPrefix = '', args, delim, prompt, fmt, primaryProject, secondaryProject, primaryCredentials, secondaryCredentials,
+  envPrefix = '', args, delim, prompt, sysPrompt, fmt, primaryProject, secondaryProject, primaryCredentials, secondaryCredentials,
 }) {
   const p1 = quote(primaryProject || ''), p2 = quote(secondaryProject || '');
   const c1 = primaryCredentials ? quote(primaryCredentials) : "''", c2 = secondaryCredentials ? quote(secondaryCredentials) : "''";
@@ -56,12 +59,12 @@ export function buildVertexFailoverScript({
   const preamble = `   _run_claude() { local p="$1"; local c="$2"; [ -n "$p" ] && export ANTHROPIC_VERTEX_PROJECT_ID="$p" CLOUDSDK_CORE_PROJECT="$p"\n` +
     `     [ -n "$c" ] && export GOOGLE_APPLICATION_CREDENTIALS="$c"; ${envPrefix}${args.join(' ')} < "$_pfile" | node ${fmt}\n   }`;
   return _buildDualSubshellScript({
-    markerName, preamble, runPrimary: `_run_claude ${p1} ${c1}`, runSecondary: `_run_claude ${p2} ${c2}`, delim, prompt,
+    markerName, preamble, runPrimary: `_run_claude ${p1} ${c1}`, runSecondary: `_run_claude ${p2} ${c2}`, delim, prompt, sysPrompt,
   });
 }
 
 export function buildCrossProviderFailoverScript({
-  envPrefix = '', primaryArgs, secondaryArgs, delim, prompt, fmt, secondaryProject, secondaryCredentials,
+  envPrefix = '', primaryArgs, secondaryArgs, delim, prompt, sysPrompt, fmt, secondaryProject, secondaryCredentials,
 }) {
   const p2 = quote(secondaryProject || ''), c2 = secondaryCredentials ? quote(secondaryCredentials) : null;
   const markerName = `failover_enmaas_${(secondaryProject || 'vertex').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
@@ -69,25 +72,22 @@ export function buildCrossProviderFailoverScript({
   const secExports = 'unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ENMAAS_KEY ENMAAS_BASE_URL CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\n' +
     `     export CLAUDE_CODE_USE_VERTEX=1 ANTHROPIC_VERTEX_PROJECT_ID=${p2} CLOUDSDK_CORE_PROJECT=${p2}${c2 ? ` GOOGLE_APPLICATION_CREDENTIALS=${c2}` : ''}`;
   const runSecondary = `${secExports}\n     ${secondaryArgs.join(' ')} < "$_pfile" | node ${fmt}`;
-  return _buildDualSubshellScript({ markerName, runPrimary, runSecondary, delim, prompt });
+  return _buildDualSubshellScript({ markerName, runPrimary, runSecondary, delim, prompt, sysPrompt });
 }
 
-export function buildCascadeScript({
-  envPrefix = '', primaryArgs, secondaryArgs, tertiaryArgs, delim, prompt, fmt,
-  type = 'cross-provider', primaryProject, primaryCredentials,
-  secondaryProject, secondaryCredentials, tertiaryProject, tertiaryCredentials,
-}) {
-  const p1Id = (type === 'cross-provider' ? 'enmaas' : (primaryProject || 'p1')).replace(/[^a-zA-Z0-9_-]/g, '_');
-  const p2Id = (secondaryProject || 't2').replace(/[^a-zA-Z0-9_-]/g, '_'), p3Id = (tertiaryProject || 't3').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const markerName = `cascade_${p1Id}_${p2Id}_${p3Id}`;
+export function buildCascadeScript(opts) {
+  const { envPrefix = '', primaryArgs, secondaryArgs, tertiaryArgs, delim, prompt, sysPrompt, fmt, type = 'cross-provider' } = opts;
+  const p1 = opts.primaryProject, p2 = opts.secondaryProject, p3 = opts.tertiaryProject;
+  const p1Id = (type === 'cross-provider' ? 'enmaas' : (p1 || 'p1')).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const p2Id = (p2 || 't2').replace(/[^a-zA-Z0-9_-]/g, '_'), p3Id = (p3 || 't3').replace(/[^a-zA-Z0-9_-]/g, '_');
   return _buildCascadeScript({
-    markerName, isCrossProvider: type === 'cross-provider', delim, prompt,
+    markerName: `cascade_${p1Id}_${p2Id}_${p3Id}`, isCrossProvider: type === 'cross-provider', delim, prompt, sysPrompt,
     runPrimary: `${envPrefix}${primaryArgs.join(' ')} < "$_pfile" | node ${fmt}`,
     runSecondary: `${secondaryArgs.join(' ')} < "$_pfile" | node ${fmt}`,
     runTertiary: `${(tertiaryArgs || secondaryArgs).join(' ')} < "$_pfile" | node ${fmt}`,
-    tier1Project: primaryProject, tier1Credentials: primaryCredentials,
-    tier2Project: secondaryProject, tier2Credentials: secondaryCredentials,
-    tier3Project: tertiaryProject, tier3Credentials: tertiaryCredentials,
+    tier1Project: p1, tier1Credentials: opts.primaryCredentials,
+    tier2Project: p2, tier2Credentials: opts.secondaryCredentials,
+    tier3Project: p3, tier3Credentials: opts.tertiaryCredentials,
   });
 }
 

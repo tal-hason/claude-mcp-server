@@ -99,11 +99,25 @@ Execute the returned command with `block_until_ms: 0` to background it. Read the
 
 Without `mode`, the tool builds a raw command (caller controls everything).
 
+### Failover & Resilience
+
+Built-in multi-tier failover ensures uninterrupted execution across cloud and gateway outages:
+
+- **Failover Triggers**:
+  - Quota exhaustion: HTTP 429, `RESOURCE_EXHAUSTED`, Rate limit, credit balance, budget exceeded.
+  - Gateway & Infra errors: HTTP 500, 502, 503, 504, 529, `ECONNRESET`, `ETIMEDOUT`, socket hang up, `UNAVAILABLE`.
+  - Process timeouts: Exit code 124 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
+- **User Error Veto**: HTTP 400, 401, 403, and `invalid_request_error` immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
+- **Shared-Quota Bypass (Cross-Provider)**: When Tier 1 (EnMaaS) exhausts shared enterprise quota (429), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
+- **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted (`F-17`) to prevent redundant invocations against the same project quota.
+- **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` is capped at 100KB (`F-1r`) to prevent argument buffer overflow and enforce clean stdin streaming via temporary files (`E2BIG` prevention).
+- **Automated Stderr Redaction**: All error logs and terminal failure outputs are filtered through stream-level `sed -E` redaction (`F-21`) to strip Bearer tokens, Basic auth, API keys, JWTs, and PEM certificate blocks prior to emitting to stderr.
+
 ### Parameters
 
 | Param | Required | Description |
 |---|---|---|
-| `prompt` | Yes | The prompt to send |
+| `prompt` | Yes | The prompt to send (combined prompt + systemPrompt <= 100KB) |
 | `mode` | No | Dispatch mode (see table above) |
 | `model` | No | Exact model name (e.g. `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/zai-org/glm-5-3`) |
 | `secondaryModel` | No | Fallback model name for cross-provider failover (defaults to Sonnet) |
@@ -141,7 +155,7 @@ Without `mode`, the tool builds a raw command (caller controls everything).
 | `CLAUDE_BIN` | `claude` | Path to Claude CLI binary |
 | `CLAUDE_MCP_DIR` | `~/.local/share/claude-mcp-server` | Install location (install.sh only) |
 | `ENMAAS_BASE_URL` | `https://api.enmaas.example.com` | Base URL for Red Hat EnMaaS AI Gateway |
-| `ENMAAS_KEY` | (empty) | API key / token for EnMaaS authentication |
+| `ENMAAS_KEY` | (empty) | API key / token for EnMaaS authentication (recommended via shell env) |
 | `VERTEX_PRIMARY_PROJECT` | (empty) | Default primary GCP project ID |
 | `VERTEX_SECONDARY_PROJECT` | (empty) | Secondary GCP project ID for failover |
 | `VERTEX_TERTIARY_PROJECT` | (empty) | Tertiary GCP project ID for 3-tier cascade failover (alias: `VERTEX_FALLBACK_PROJECT`) |
@@ -151,9 +165,11 @@ Without `mode`, the tool builds a raw command (caller controls everything).
 
 ### Configuration CLI (`setup.sh --configure`)
 
-Configure or update MCP credentials and failover settings:
+Configure or update MCP credentials and failover settings. To protect sensitive credentials from process listing exposure (`ps aux`), export `ENMAAS_KEY` in your environment rather than passing it as a CLI flag:
 
 ```bash
+export ENMAAS_KEY="<your-secret-key>"
+
 ./setup.sh --configure \
   --primary-project "<PRIMARY_PROJECT_ID>" \
   --secondary-project "<SECONDARY_PROJECT_ID>" \
@@ -161,6 +177,5 @@ Configure or update MCP credentials and failover settings:
   --primary-credentials "/path/to/primary-sa.json" \
   --secondary-credentials "/path/to/secondary-sa.json" \
   --tertiary-credentials "/path/to/tertiary-sa.json" \
-  --gateway-url "https://api.enmaas.example.com" \
-  --enmaas-key "secret-key"
+  --gateway-url "https://api.enmaas.example.com"
 ```

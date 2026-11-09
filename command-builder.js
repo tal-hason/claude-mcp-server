@@ -1,10 +1,10 @@
 // claude-mcp-server/command-builder.js
-// @ai-rules: [Pattern]: Pure logic — exports shellQuote + buildCommand. [Constraint]: Zero I/O or MCP SDK.
+// @ai-rules: [Pattern]: Pure logic — exports shellQuote + buildCommand. [Constraint]: Zero I/O or MCP SDK, <= 100 lines.
 
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { MODES, MODE_NAMES } from './modes.js';
+import { MODES, MODE_NAMES, getModeDefaultModel } from './modes.js';
 import { resolveProvider, buildProviderEnv, supportsEffort } from './providers.js';
 import { resolveFailoverConfig, resolveSecondaryModel, buildFailoverScript } from './failover.js';
 
@@ -18,12 +18,13 @@ export function shellQuote(s) {
 }
 
 export function buildCommand(params, env = process.env) {
-  if (Buffer.byteLength(params.prompt || '') > MAX_PROMPT_BYTES) {
+  const totalBytes = Buffer.byteLength(params.prompt || '') + Buffer.byteLength(params.systemPrompt || '');
+  if (totalBytes > MAX_PROMPT_BYTES) {
     return { content: [{ type: 'text', text: 'Error: prompt exceeds 100KB.' }], isError: true };
   }
 
   const modeConfig = params.mode ? MODES[params.mode] : null;
-  const resolvedModel = params.model || ((params.mode === 'explorer' && (params.provider === 'vertex' || !env.ENMAAS_KEY)) ? 'claude-sonnet-5-5' : modeConfig?.defaultModel);
+  const resolvedModel = params.model || getModeDefaultModel(params.mode, env, params.provider);
   const model = resolvedModel || 'default';
   const effort = params.effort || modeConfig?.effort, appendPrompt = modeConfig?.appendSystemPrompt;
   const mode = params.mode || 'prompt';
@@ -55,7 +56,7 @@ export function buildCommand(params, env = process.env) {
   const tertiaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
   if (tertModel) tertiaryArgs.push('--model', shellQuote(tertModel));
   if (tertEffort) tertiaryArgs.push('--effort', shellQuote(tertEffort));
-  tertiaryArgs.push(...shared);
+  secondaryArgs.push(...shared);
 
   let delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
   while (params.prompt && params.prompt.includes(delim)) delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
@@ -67,7 +68,10 @@ export function buildCommand(params, env = process.env) {
 
   const envPrefix = envVars.length > 0 ? `${envVars.join(' ')} ` : '';
   if (failoverConfig?.enabled) {
-    commandLines.push(buildFailoverScript({ failoverConfig, envPrefix, primaryArgs, secondaryArgs, tertiaryArgs, delim, prompt: params.prompt, fmt, ...failoverConfig }));
+    commandLines.push(buildFailoverScript({
+      failoverConfig, envPrefix, primaryArgs, secondaryArgs, tertiaryArgs, delim,
+      prompt: params.prompt, sysPrompt: params.systemPrompt, fmt, ...failoverConfig,
+    }));
   } else {
     commandLines.push(`${envPrefix}${primaryArgs.join(' ')} <<'${delim}' | node ${fmt}`, params.prompt, delim);
   }

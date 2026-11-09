@@ -12,39 +12,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-const TRACKED_ENV_VARS = [
-  'CLAUDE_BIN', 'ENMAAS_KEY', 'ENMAAS_BASE_URL',
-  'VERTEX_PRIMARY_PROJECT', 'VERTEX_PRIMARY_CREDENTIALS',
-  'VERTEX_SECONDARY_PROJECT', 'VERTEX_SECONDARY_CREDENTIALS',
-  'VERTEX_TERTIARY_PROJECT', 'VERTEX_TERTIARY_CREDENTIALS',
-  'VERTEX_FALLBACK_PROJECT', 'VERTEX_FALLBACK_CREDENTIALS',
-  'ANTHROPIC_VERTEX_PROJECT_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
-  'CLOUDSDK_CORE_PROJECT', 'XDG_RUNTIME_DIR'
-];
-
-let savedEnv = {};
-beforeEach(() => {
-  savedEnv = {};
-  for (const k of TRACKED_ENV_VARS) {
-    if (k in process.env) {
-      savedEnv[k] = process.env[k];
-      delete process.env[k];
-    }
-  }
-});
-
-afterEach(() => {
-  for (const k of TRACKED_ENV_VARS) {
-    if (k in savedEnv) {
-      process.env[k] = savedEnv[k];
-    } else {
-      delete process.env[k];
-    }
-  }
-});
-
-
 import { shellQuote, buildCommand } from '../command-builder.js';
+import { createEnvScrubber } from './helpers/env.js';
+
+const scrubber = createEnvScrubber();
+beforeEach(() => scrubber.scrub());
+afterEach(() => scrubber.restore());
 
 // Dynamic loader for providers.js to allow running tests in Red-First ATDD
 async function getProviders() {
