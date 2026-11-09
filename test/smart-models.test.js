@@ -1,11 +1,42 @@
 // claude-mcp-server/test/smart-models.test.js
 // @ai-rules: [Pattern]: ATDD acceptance tests for dynamic work-weighting & model discovery. [Constraint]: Pure logic, node:test only.
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchEnmaasModels, VERTEX_MODELS } from '../models.js';
 import { MODES } from '../modes.js';
 import { buildCommand } from '../command-builder.js';
+const TRACKED_ENV_VARS = [
+  'CLAUDE_BIN', 'ENMAAS_KEY', 'ENMAAS_BASE_URL',
+  'VERTEX_PRIMARY_PROJECT', 'VERTEX_PRIMARY_CREDENTIALS',
+  'VERTEX_SECONDARY_PROJECT', 'VERTEX_SECONDARY_CREDENTIALS',
+  'VERTEX_TERTIARY_PROJECT', 'VERTEX_TERTIARY_CREDENTIALS',
+  'VERTEX_FALLBACK_PROJECT', 'VERTEX_FALLBACK_CREDENTIALS',
+  'ANTHROPIC_VERTEX_PROJECT_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
+  'CLOUDSDK_CORE_PROJECT', 'XDG_RUNTIME_DIR'
+];
+
+let savedEnv = {};
+beforeEach(() => {
+  savedEnv = {};
+  for (const k of TRACKED_ENV_VARS) {
+    if (k in process.env) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  }
+});
+
+afterEach(() => {
+  for (const k of TRACKED_ENV_VARS) {
+    if (k in savedEnv) {
+      process.env[k] = savedEnv[k];
+    } else {
+      delete process.env[k];
+    }
+  }
+});
+
 
 describe('ATDD Layer 1: Model Discovery & Capabilities (models.js)', () => {
   it('rits/zai-org/glm-5-3 is tagged with cost: "free"', async () => {
@@ -58,11 +89,17 @@ describe('ATDD Layer 1: Work-to-Model Mode Defaults (modes.js)', () => {
 });
 
 describe('ATDD Layer 1 & 2: Command Builder Work-Weighting & Caller Override (command-builder.js)', () => {
-  it('explorer mode uses GLM 5.3 default and suppresses --effort', () => {
-    const res = buildCommand({ prompt: 'search files', mode: 'explorer' });
+  it('explorer mode uses GLM 5.3 default when EnMaaS available and suppresses --effort', () => {
+    const res = buildCommand({ prompt: 'search files', mode: 'explorer' }, { ENMAAS_KEY: 'test-key' });
     const parsed = JSON.parse(res.content[0].text);
     assert.ok(parsed.command.includes("--model 'rits/zai-org/glm-5-3'"), 'Must route explorer to GLM 5.3');
     assert.ok(!parsed.command.includes('--effort'), 'Effort must be suppressed for GLM 5.3');
+  });
+
+  it('explorer mode falls back to Vertex safe model without ENMAAS_KEY', () => {
+    const res = buildCommand({ prompt: 'search files', mode: 'explorer' }, {});
+    const parsed = JSON.parse(res.content[0].text);
+    assert.ok(parsed.command.includes("--model 'claude-sonnet-5-5'"), 'Must fall back to Vertex-capable model');
   });
 
   it('reviewer mode defaults to claude-opus-5-5 with max effort', () => {

@@ -163,8 +163,10 @@ patch_mcp_env() {
 configure_mcp() {
   local primary_project=""
   local secondary_project=""
+  local tertiary_project=""
   local primary_credentials=""
   local secondary_credentials=""
+  local tertiary_credentials=""
   local enmaas_key=""
   local gateway_url=""
 
@@ -179,11 +181,17 @@ configure_mcp() {
       --secondary-project|--failover-project)
         if [[ $# -ge 2 ]]; then secondary_project="$2"; shift 2; else shift; fi
         ;;
+      --tertiary-project|--fallback-project)
+        if [[ $# -ge 2 ]]; then tertiary_project="$2"; shift 2; else shift; fi
+        ;;
       --primary-credentials)
         if [[ $# -ge 2 ]]; then primary_credentials="$2"; shift 2; else shift; fi
         ;;
       --secondary-credentials|--failover-credentials)
         if [[ $# -ge 2 ]]; then secondary_credentials="$2"; shift 2; else shift; fi
+        ;;
+      --tertiary-credentials|--fallback-credentials)
+        if [[ $# -ge 2 ]]; then tertiary_credentials="$2"; shift 2; else shift; fi
         ;;
       --enmaas-key)
         if [[ $# -ge 2 ]]; then enmaas_key="$2"; shift 2; else shift; fi
@@ -197,6 +205,9 @@ configure_mcp() {
     esac
   done
 
+  if [[ -n "$tertiary_credentials" && -f "$tertiary_credentials" ]]; then
+    tertiary_credentials="$(cd "$(dirname "$tertiary_credentials")" && pwd)/$(basename "$tertiary_credentials")"
+  fi
   if [[ -n "$secondary_credentials" && -f "$secondary_credentials" ]]; then
     secondary_credentials="$(cd "$(dirname "$secondary_credentials")" && pwd)/$(basename "$secondary_credentials")"
   fi
@@ -218,11 +229,17 @@ configure_mcp() {
     if [[ -n "$secondary_project" ]]; then
       patch_mcp_env "$config_file" "VERTEX_SECONDARY_PROJECT" "$secondary_project"
     fi
+    if [[ -n "$tertiary_project" ]]; then
+      patch_mcp_env "$config_file" "VERTEX_TERTIARY_PROJECT" "$tertiary_project"
+    fi
     if [[ -n "$primary_credentials" ]]; then
       patch_mcp_env "$config_file" "VERTEX_PRIMARY_CREDENTIALS" "$primary_credentials"
     fi
     if [[ -n "$secondary_credentials" ]]; then
       patch_mcp_env "$config_file" "VERTEX_SECONDARY_CREDENTIALS" "$secondary_credentials"
+    fi
+    if [[ -n "$tertiary_credentials" ]]; then
+      patch_mcp_env "$config_file" "VERTEX_TERTIARY_CREDENTIALS" "$tertiary_credentials"
     fi
     if [[ -n "$enmaas_key" ]]; then
       patch_mcp_env "$config_file" "ENMAAS_KEY" "$enmaas_key"

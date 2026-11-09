@@ -11,7 +11,7 @@ export function resolveFailoverConfig(provider = 'vertex', params = {}, env = pr
     env = (params && Object.keys(params).length > 0) ? params : (env || process.env);
     params = provider; provider = params.provider || 'vertex';
   }
-  const isEnmaas = provider === 'enmaas' || (provider === 'auto' && (params.model?.startsWith('rits/') || params.model?.includes('enmaas')));
+  const isEnmaas = provider === 'enmaas' || (params.model?.startsWith('rits/') || params.model?.includes('enmaas'));
   const gcp = resolveGcpProjects(params, env);
   const secProj = gcp.secondaryProject || gcp.explicitPrimaryProject;
   const secCreds = gcp.secondaryCredentials || gcp.primaryCredentials;
@@ -53,11 +53,10 @@ export function buildVertexFailoverScript({
   const p1 = quote(primaryProject || ''), p2 = quote(secondaryProject || '');
   const c1 = primaryCredentials ? quote(primaryCredentials) : "''", c2 = secondaryCredentials ? quote(secondaryCredentials) : "''";
   const markerName = `failover_${(primaryProject || 'p1').replace(/[^a-zA-Z0-9_-]/g, '_')}_${(secondaryProject || 'p2').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-  const preamble = `   _run_claude() { local p="$1"; local c="$2"; [ -n "$p" ] && export ANTHROPIC_VERTEX_PROJECT_ID="$p"\n` +
-    `     [ -n "$c" ] && export GOOGLE_APPLICATION_CREDENTIALS="$c"; ${envPrefix}${args.join(' ')} <<'${delim}' | node ${fmt}\n${prompt}\n${delim}\n   }`;
+  const preamble = `   _run_claude() { local p="$1"; local c="$2"; [ -n "$p" ] && export ANTHROPIC_VERTEX_PROJECT_ID="$p" CLOUDSDK_CORE_PROJECT="$p"\n` +
+    `     [ -n "$c" ] && export GOOGLE_APPLICATION_CREDENTIALS="$c"; ${envPrefix}${args.join(' ')} < "$_pfile" | node ${fmt}\n   }`;
   return _buildDualSubshellScript({
-    markerName, preamble, runPrimary: `_run_claude ${p1} ${c1}`, runSecondary: `_run_claude ${p2} ${c2}`,
-    regexPattern: 'RESOURCE_EXHAUSTED|Quota exceeded|429|budget|billing',
+    markerName, preamble, runPrimary: `_run_claude ${p1} ${c1}`, runSecondary: `_run_claude ${p2} ${c2}`, delim, prompt,
   });
 }
 
@@ -66,11 +65,11 @@ export function buildCrossProviderFailoverScript({
 }) {
   const p2 = quote(secondaryProject || ''), c2 = secondaryCredentials ? quote(secondaryCredentials) : null;
   const markerName = `failover_enmaas_${(secondaryProject || 'vertex').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-  const runPrimary = `${envPrefix}${primaryArgs.join(' ')} <<'${delim}' | node ${fmt}\n${prompt}\n${delim}`;
-  const secExports = 'unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\n' +
+  const runPrimary = `${envPrefix}${primaryArgs.join(' ')} < "$_pfile" | node ${fmt}`;
+  const secExports = 'unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ENMAAS_KEY ENMAAS_BASE_URL CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\n' +
     `     export CLAUDE_CODE_USE_VERTEX=1 ANTHROPIC_VERTEX_PROJECT_ID=${p2} CLOUDSDK_CORE_PROJECT=${p2}${c2 ? ` GOOGLE_APPLICATION_CREDENTIALS=${c2}` : ''}`;
-  const runSecondary = `${secExports}\n     ${secondaryArgs.join(' ')} <<'${delim}' | node ${fmt}\n${prompt}\n${delim}`;
-  return _buildDualSubshellScript({ markerName, runPrimary, runSecondary });
+  const runSecondary = `${secExports}\n     ${secondaryArgs.join(' ')} < "$_pfile" | node ${fmt}`;
+  return _buildDualSubshellScript({ markerName, runPrimary, runSecondary, delim, prompt });
 }
 
 export function buildCascadeScript({
@@ -82,18 +81,18 @@ export function buildCascadeScript({
   const p2Id = (secondaryProject || 't2').replace(/[^a-zA-Z0-9_-]/g, '_'), p3Id = (tertiaryProject || 't3').replace(/[^a-zA-Z0-9_-]/g, '_');
   const markerName = `cascade_${p1Id}_${p2Id}_${p3Id}`;
   return _buildCascadeScript({
-    markerName, isCrossProvider: type === 'cross-provider',
-    runPrimary: `${envPrefix}${primaryArgs.join(' ')} <<'${delim}' | node ${fmt}\n${prompt}\n${delim}`,
-    runSecondary: `${secondaryArgs.join(' ')} <<'${delim}' | node ${fmt}\n${prompt}\n${delim}`,
-    runTertiary: `${(tertiaryArgs || secondaryArgs).join(' ')} <<'${delim}' | node ${fmt}\n${prompt}\n${delim}`,
+    markerName, isCrossProvider: type === 'cross-provider', delim, prompt,
+    runPrimary: `${envPrefix}${primaryArgs.join(' ')} < "$_pfile" | node ${fmt}`,
+    runSecondary: `${secondaryArgs.join(' ')} < "$_pfile" | node ${fmt}`,
+    runTertiary: `${(tertiaryArgs || secondaryArgs).join(' ')} < "$_pfile" | node ${fmt}`,
     tier1Project: primaryProject, tier1Credentials: primaryCredentials,
     tier2Project: secondaryProject, tier2Credentials: secondaryCredentials,
     tier3Project: tertiaryProject, tier3Credentials: tertiaryCredentials,
   });
 }
 
-export function buildFailoverScript(opts, pArgs) {
+export function buildFailoverScript(opts) {
   const o = opts.failoverConfig ? { ...opts, ...opts.failoverConfig } : opts;
   if (o.hasTertiary) return buildCascadeScript(o);
-  return o.type === 'cross-provider' ? buildCrossProviderFailoverScript(o) : buildVertexFailoverScript({ ...o, args: o.primaryArgs || pArgs || o.args });
+  return o.type === 'cross-provider' ? buildCrossProviderFailoverScript(o) : buildVertexFailoverScript({ ...o, args: o.primaryArgs || o.args });
 }

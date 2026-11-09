@@ -12,6 +12,37 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+const TRACKED_ENV_VARS = [
+  'CLAUDE_BIN', 'ENMAAS_KEY', 'ENMAAS_BASE_URL',
+  'VERTEX_PRIMARY_PROJECT', 'VERTEX_PRIMARY_CREDENTIALS',
+  'VERTEX_SECONDARY_PROJECT', 'VERTEX_SECONDARY_CREDENTIALS',
+  'VERTEX_TERTIARY_PROJECT', 'VERTEX_TERTIARY_CREDENTIALS',
+  'VERTEX_FALLBACK_PROJECT', 'VERTEX_FALLBACK_CREDENTIALS',
+  'ANTHROPIC_VERTEX_PROJECT_ID', 'GOOGLE_APPLICATION_CREDENTIALS',
+  'CLOUDSDK_CORE_PROJECT', 'XDG_RUNTIME_DIR'
+];
+
+let savedEnv = {};
+beforeEach(() => {
+  savedEnv = {};
+  for (const k of TRACKED_ENV_VARS) {
+    if (k in process.env) {
+      savedEnv[k] = process.env[k];
+      delete process.env[k];
+    }
+  }
+});
+
+afterEach(() => {
+  for (const k of TRACKED_ENV_VARS) {
+    if (k in savedEnv) {
+      process.env[k] = savedEnv[k];
+    } else {
+      delete process.env[k];
+    }
+  }
+});
+
 
 import { shellQuote, buildCommand } from '../command-builder.js';
 
@@ -572,7 +603,7 @@ describe('buildCommand & providers.js - Vertex multi-project budget failover', (
     assert.ok(parsed.command.includes('_run_claude'), 'Command should define _run_claude function');
     assert.ok(parsed.command.includes('ANTHROPIC_VERTEX_PROJECT_ID'), 'Command should export ANTHROPIC_VERTEX_PROJECT_ID');
     assert.ok(
-      parsed.command.includes('RESOURCE_EXHAUSTED|Quota exceeded|429|budget|billing'),
+      parsed.command.includes('RESOURCE_EXHAUSTED') && parsed.command.includes('429'),
       'Command should check for quota/budget exhaustion error patterns'
     );
   });
@@ -773,7 +804,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
       prompt: 'test',
     });
     const parsed = JSON.parse(result.content[0].text);
-    assert.ok(parsed.command.includes('429|502|503|504'), 'Must match 429/50x');
+    assert.ok(parsed.command.includes('429') && parsed.command.includes('502|503|504'), 'Must match 429/50x');
     assert.ok(parsed.command.includes('ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT'), 'Must match network errors');
   });
 

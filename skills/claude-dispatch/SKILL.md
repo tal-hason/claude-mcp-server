@@ -24,19 +24,23 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 - `prompt` (string, required): Task prompt to execute.
 - `mode` (string, optional): `architect`, `planner`, `reviewer`, `explorer`, `executor`.
 - `model` (string, optional): Target model name (e.g. `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/zai-org/glm-5-3`).
+- `secondaryModel` (string, optional): Fallback model name for cross-provider failover (defaults to Sonnet).
+- `tertiaryModel` (string, optional): Tertiary model name for 3-tier cascade fallback (defaults to Sonnet).
 - `provider` (string, optional): `auto` (default), `enmaas`, or `vertex`.
 - `effort` (string, optional): `low`, `medium`, `high`, `xhigh`, `max`.
 - `primaryProject` (string, optional): Primary GCP project ID for Vertex AI.
-- `secondaryProject` (string, optional): Secondary GCP project ID for Vertex AI budget failover.
+- `secondaryProject` (string, optional): Secondary GCP project ID for Vertex AI budget failover (Tier 2).
+- `tertiaryProject` (string, optional): Tertiary GCP project ID for 3-tier cascade failover (Tier 3).
 - `primaryCredentials` (string, optional): Path to primary GCP service account credentials JSON.
 - `secondaryCredentials` (string, optional): Path to secondary GCP service account credentials JSON.
+- `tertiaryCredentials` (string, optional): Path to tertiary GCP service account credentials JSON.
 - `systemPrompt` (string, optional): System prompt override.
 - `sessionId` (string, optional): Resume a previous session by ID.
 - `cwd` (string, optional): Target working directory.
 
 ## 2. Providers & Environment Configuration
 
-### Red Hat EnMaaS AI Gateway
+### Red Hat EnMaaS AI Gateway & 3-Tier Cascade Failover
 - Gateway URL: Configured via `ENMAAS_BASE_URL` (defaults to `https://api.enmaas.example.com`).
 - Authentication: `ENMAAS_KEY` environment variable (required when routing to EnMaaS).
 - **Process Environment & Security Boundary (CR-01 & CR-03)**:
@@ -44,12 +48,18 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
   - **Security Warning**: Avoid passing raw tokens via CLI arguments (`--enmaas-key <secret>`) in multi-user or shared environments, as arguments are visible in process tables (`ps aux`, `/proc/$pid/cmdline`). Always prefer setting `export ENMAAS_KEY="<token>"` in the shell environment.
 - Auto-routed models: `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/*`, or when `provider: "enmaas"` is explicitly set.
 - Effort support: Reasoning effort is supported for Claude models (`opus`, `sonnet`); suppressed as `unsupported` for third-party models (e.g. `rits/zai-org/glm-5-3`).
-- Cross-Provider Failover: When routing to EnMaaS with `secondaryProject` (or `VERTEX_SECONDARY_PROJECT`) configured, gateway transient outages (429, 502, 503, 504, connection timeouts) trigger automatic subshell failover to GCP Vertex AI with Sonnet fallback and clean environment sanitization.
+- **3-Tier Cascade Failover**: When both `secondaryProject` and `tertiaryProject` (or `VERTEX_TERTIARY_PROJECT` / `VERTEX_FALLBACK_PROJECT`) are configured:
+  - **Tier 1 (EnMaaS)**: Primary inference through EnMaaS gateway.
+  - **Tier 2 (Vertex Secondary)**: Triggered on EnMaaS transient outages (429, 502, 503, 504, connection timeouts) with Sonnet fallback and clean environment sanitization (`UNSET_GW`).
+  - **Tier 3 (Vertex Tertiary)**: Triggered if Tier 2 experiences quota exhaustion, project budget exhaustion, or IAM authorization failure.
+  - **Prompt Efficiency**: Prompts are written once to a private subshell temp file (`$_pfile`) and piped via stdin redirection (`< "$_pfile"`), preventing command-line argument length (`E2BIG`) overflow.
+  - **Sticky Failover**: Success on a fallback tier drops a sticky marker in `_marker_dir` (backed by `XDG_RUNTIME_DIR` or `/tmp`) to fast-path subsequent runs without repeating failed tiers. Success on Tier 1 clears fallback markers.
+  - **Security Redaction**: Stderr streams pipe through automated redaction filtering Bearer, Basic, `sk-ant-`, `ya29.`, and sensitive tokens.
 
 ### Google Cloud Vertex AI
 - Default provider for standard Claude models (`claude-sonnet-4-6`, `claude-opus-4-8`).
 - Uses Google Cloud ADC (`gcloud auth application-default login`) or `GOOGLE_APPLICATION_CREDENTIALS`.
-- Automatic failover: When `secondaryProject` (or `VERTEX_SECONDARY_PROJECT`) is configured, primary project quota exhaustion (`RESOURCE_EXHAUSTED`, `429`, billing limits) triggers automated failover retry on the secondary project.
+- Automatic failover: When `secondaryProject` (or `VERTEX_SECONDARY_PROJECT`) is configured, primary project quota exhaustion (`RESOURCE_EXHAUSTED`, `429`, billing limits) triggers automated failover retry on the secondary project. When `tertiaryProject` is also configured, secondary exhaustion cascades to the tertiary project.
 
 ## 3. Dispatch Protocol
 
@@ -78,8 +88,10 @@ Agents can autonomously configure, verify, and heal `claude-cli` MCP server sett
    ./setup.sh --configure \
      --primary-project "<PROJECT_P1>" \
      --secondary-project "<PROJECT_P2>" \
+     --tertiary-project "<PROJECT_P3>" \
      --primary-credentials "<PATH_TO_SA1>" \
      --secondary-credentials "<PATH_TO_SA2>" \
+     --tertiary-credentials "<PATH_TO_SA3>" \
      --gateway-url "<ENMAAS_GATEWAY_URL>" \
      --enmaas-key "<ENMAAS_TOKEN>"
    ```
@@ -97,4 +109,4 @@ Agents can autonomously configure, verify, and heal `claude-cli` MCP server sett
   Token expired or invalid. Agent prompts user for refreshed EnMaaS token, exports in shell, and updates via `./setup.sh --configure --enmaas-key <key>`.
 - **Error: `RESOURCE_EXHAUSTED` / `429` on Vertex (single project)**:
   Agent catches budget limit. Explains project exhaustion to user and offers to configure failover via:
-  `./setup.sh --configure --secondary-project <secondary_project_id>`
+  `./setup.sh --configure --secondary-project <secondary_project_id> --tertiary-project <tertiary_project_id>`

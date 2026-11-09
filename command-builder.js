@@ -17,20 +17,20 @@ export function shellQuote(s) {
   return typeof s !== 'string' ? "''" : "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-export function buildCommand(params) {
+export function buildCommand(params, env = process.env) {
   if (Buffer.byteLength(params.prompt || '') > MAX_PROMPT_BYTES) {
-    return { content: [{ type: 'text', text: 'Error: prompt exceeds 100KB. Write to a temp file and use --input-file, or split the review.' }], isError: true };
+    return { content: [{ type: 'text', text: 'Error: prompt exceeds 100KB.' }], isError: true };
   }
 
   const modeConfig = params.mode ? MODES[params.mode] : null;
-  const resolvedModel = params.model || modeConfig?.defaultModel;
+  const resolvedModel = params.model || ((params.mode === 'explorer' && (params.provider === 'vertex' || !env.ENMAAS_KEY)) ? 'claude-sonnet-5-5' : modeConfig?.defaultModel);
   const model = resolvedModel || 'default';
   const effort = params.effort || modeConfig?.effort, appendPrompt = modeConfig?.appendSystemPrompt;
   const mode = params.mode || 'prompt';
-  const provider = resolveProvider(params.provider, resolvedModel);
+  const provider = resolveProvider(params.provider, resolvedModel, env);
   const { envVars = [], settings = null } = buildProviderEnv(provider, resolvedModel) || {};
 
-  const bin = process.env.CLAUDE_BIN || 'claude', shared = [];
+  const bin = env.CLAUDE_BIN || 'claude', shared = [];
   if (params.systemPrompt) shared.push('--system-prompt', shellQuote(params.systemPrompt));
   if (appendPrompt) shared.push('--append-system-prompt', shellQuote(appendPrompt));
   if (params.sessionId) shared.push('--resume', shellQuote(params.sessionId));
@@ -42,7 +42,7 @@ export function buildCommand(params) {
   if (settings) primaryArgs.push('--settings', shellQuote(JSON.stringify(settings)));
   primaryArgs.push(...shared);
 
-  const failoverConfig = resolveFailoverConfig(provider, params, process.env);
+  const failoverConfig = resolveFailoverConfig(provider, params, env);
   const secModel = resolveSecondaryModel(resolvedModel, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
   const secEffort = supportsEffort(secModel || 'sonnet') ? effort : null;
   const secondaryArgs = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];

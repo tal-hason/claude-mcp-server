@@ -105,14 +105,17 @@ Without `mode`, the tool builds a raw command (caller controls everything).
 |---|---|---|
 | `prompt` | Yes | The prompt to send |
 | `mode` | No | Dispatch mode (see table above) |
-| `model` | No | Exact model name (e.g. `claude-opus-4-8`, `rits/zai-org/glm-5-3`) |
+| `model` | No | Exact model name (e.g. `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/zai-org/glm-5-3`) |
 | `secondaryModel` | No | Fallback model name for cross-provider failover (defaults to Sonnet) |
+| `tertiaryModel` | No | Tertiary model name for 3-tier cascade fallback (defaults to Sonnet) |
 | `effort` | No | `low` / `medium` / `high` / `xhigh` / `max` |
 | `provider` | No | Inference provider: `auto` (default), `enmaas`, or `vertex` |
 | `primaryProject` | No | Primary GCP project ID for Vertex AI execution |
-| `secondaryProject` | No | Secondary GCP project ID for Vertex failover |
+| `secondaryProject` | No | Secondary GCP project ID for Vertex failover (Tier 2) |
+| `tertiaryProject` | No | Tertiary GCP project ID for 3-tier cascade failover (Tier 3) |
 | `primaryCredentials` | No | Path to primary GCP service account credentials JSON |
 | `secondaryCredentials` | No | Path to secondary GCP service account credentials JSON |
+| `tertiaryCredentials` | No | Path to tertiary GCP service account credentials JSON |
 | `systemPrompt` | No | System prompt override |
 | `sessionId` | No | Resume a previous session |
 | `cwd` | No | Working directory for Claude CLI |
@@ -123,9 +126,11 @@ Without `mode`, the tool builds a raw command (caller controls everything).
 |---|---|
 | `server.js` | MCP entry point — thin wiring, delegates to command-builder |
 | `command-builder.js` | Pure logic — shellQuote, buildCommand, mode resolution |
-| `failover.js` | Failover logic — Vertex quota retry & EnMaaS-to-Vertex subshell failover |
+| `failover.js` | Failover logic — Vertex quota retry, cross-provider, & 3-tier cascade failover |
+| `failover-scripts.js` | Shell script generation — heredoc templates, sticky markers, signal traps, and redaction |
 | `providers.js` | Provider routing & environment variables configuration |
 | `modes.js` | Dispatch mode definitions (effort + system prompt per role) |
+| `models.js` | Dynamic model discovery and capability probing (`claude_models`) |
 | `setup.sh` | From-source setup: deps + MCP registration & `--configure` CLI |
 | `install.sh` | Curl-pipeable installer: download release + register |
 
@@ -139,8 +144,10 @@ Without `mode`, the tool builds a raw command (caller controls everything).
 | `ENMAAS_KEY` | (empty) | API key / token for EnMaaS authentication |
 | `VERTEX_PRIMARY_PROJECT` | (empty) | Default primary GCP project ID |
 | `VERTEX_SECONDARY_PROJECT` | (empty) | Secondary GCP project ID for failover |
+| `VERTEX_TERTIARY_PROJECT` | (empty) | Tertiary GCP project ID for 3-tier cascade failover (alias: `VERTEX_FALLBACK_PROJECT`) |
 | `VERTEX_PRIMARY_CREDENTIALS` | (empty) | Primary GCP service account JSON credentials file |
 | `VERTEX_SECONDARY_CREDENTIALS` | (empty) | Secondary GCP service account JSON credentials file |
+| `VERTEX_TERTIARY_CREDENTIALS` | (empty) | Tertiary GCP service account JSON credentials file (alias: `VERTEX_FALLBACK_CREDENTIALS`) |
 
 ### Configuration CLI (`setup.sh --configure`)
 
@@ -149,9 +156,11 @@ Configure or update MCP credentials and failover settings:
 ```bash
 ./setup.sh --configure \
   --primary-project "<PRIMARY_PROJECT_ID>" \
-  --failover-project "<SECONDARY_PROJECT_ID>" \
+  --secondary-project "<SECONDARY_PROJECT_ID>" \
+  --tertiary-project "<TERTIARY_PROJECT_ID>" \
   --primary-credentials "/path/to/primary-sa.json" \
-  --failover-credentials "/path/to/secondary-sa.json" \
+  --secondary-credentials "/path/to/secondary-sa.json" \
+  --tertiary-credentials "/path/to/tertiary-sa.json" \
   --gateway-url "https://api.enmaas.example.com" \
   --enmaas-key "secret-key"
 ```
