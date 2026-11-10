@@ -64,8 +64,12 @@ Two tools:
 
 ```
 CallMcpTool: user-claude-cli / claude_models
-{ "provider": "all" }
+{ "provider": "all", "project": "my-vertex-project" }
 ```
+
+Parameters:
+- `provider`: `"all"` (default), `"enmaas"`, or `"vertex"`
+- `project`: Optional GCP project ID to query specific Vertex AI quotas/models
 
 Returns real-time models for EnMaaS (e.g. `rits/zai-org/glm-5-3`, `rits/deepseek-ai/DeepSeek-V4.1-Flash-1017`) and supported Claude aliases (`sonnet`, `opus`, `haiku`) per Vertex AI project.
 
@@ -153,6 +157,7 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLAUDE_BIN` | `claude` | Path to Claude CLI binary |
+| `CLAUDE_TIMEOUT` | `1800` | Per-tier execution timeout in seconds |
 | `CLAUDE_MCP_DIR` | `~/.local/share/claude-mcp-server` | Install location (install.sh only) |
 | `ENMAAS_BASE_URL` | `https://api.enmaas.example.com` | Base URL for Red Hat EnMaaS AI Gateway |
 | `ENMAAS_KEY` | (empty) | API key / token for EnMaaS authentication (recommended via shell env) |

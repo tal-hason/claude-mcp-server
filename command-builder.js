@@ -32,8 +32,11 @@ export function buildCommand(params, env = process.env) {
   const provider = resolveProvider(params.provider, resolvedModel, env);
   const { envVars = [], settings = null } = buildProviderEnv(provider, resolvedModel) || {};
 
+  const failoverConfig = resolveFailoverConfig(provider, params, env);
+  const isFailover = Boolean(failoverConfig?.enabled);
+
   const bin = env.CLAUDE_BIN || 'claude', shared = [];
-  if (params.systemPrompt) shared.push('--system-prompt', shellQuote(params.systemPrompt));
+  if (params.systemPrompt) shared.push('--system-prompt', isFailover ? '"$(< "$_spfile")"' : shellQuote(params.systemPrompt));
   if (appendPrompt) shared.push('--append-system-prompt', shellQuote(appendPrompt));
   if (params.sessionId) shared.push('--resume', shellQuote(params.sessionId));
 
@@ -49,7 +52,6 @@ export function buildCommand(params, env = process.env) {
   const pEffort = supportsEffort(resolvedModel) ? effort : null;
   const primaryArgs = makeTierArgs(resolvedModel, pEffort, settings);
 
-  const failoverConfig = resolveFailoverConfig(provider, params, env);
   const secModel = resolveSecondaryModel(resolvedModel, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
   const secEffort = supportsEffort(secModel || 'sonnet') ? effort : null;
   const secondaryArgs = makeTierArgs(secModel, secEffort);
@@ -59,10 +61,13 @@ export function buildCommand(params, env = process.env) {
   const tertiaryArgs = makeTierArgs(tertModel, tertEffort);
 
   let delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
-  while (params.prompt && params.prompt.includes(delim)) delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
+  while ((params.prompt && params.prompt.includes(delim)) || (params.systemPrompt && params.systemPrompt.includes(delim))) {
+    delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
+  }
 
   const c = { architect: '35', reviewer: '31', planner: '34', explorer: '32', executor: '33' }[mode] || '37', fmt = shellQuote(FORMATTER_PATH);
-  const commandLines = [`_start=$(date +%s)`, `[ -f ${fmt} ] || { echo "[claude-mcp] Error: Formatter not found at ${fmt}" >&2; exit 1; }`];
+  const preflight = `command -v node >/dev/null 2>&1 && [ -f ${fmt} ] || { echo "[claude-mcp] Error: node or formatter missing" >&2; exit 1; }`;
+  const commandLines = [preflight, `_start=$(date +%s)`];
   if (params.cwd) commandLines.push(`cd ${shellQuote(params.cwd)} || exit 1`);
   commandLines.push(`printf '\\033[1;${c}m┌─ %s │ %s │ %s ─┐\\033[0m\\n' ${shellQuote(mode.toUpperCase())} ${shellQuote(model)} "$(date +%H:%M:%S)"`);
 

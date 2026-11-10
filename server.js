@@ -28,7 +28,7 @@ server.tool(
     'Returns real-time models for EnMaaS (free GLM 5.3, frontier Claude 5.5, DeepSeek) and supported Claude models per Vertex AI project.',
   ].join(' '),
   {
-    provider: z.enum(['auto', 'enmaas', 'vertex', 'all']).optional().default('all').describe('Provider filter: "enmaas", "vertex", or "all" (default).'),
+    provider: z.enum(['auto', 'enmaas', 'vertex', 'all']).nullish().default('all').describe('Provider filter: "enmaas", "vertex", or "all" (default).'),
     project: z.string().optional().describe('Filter for a specific GCP Vertex AI project ID.'),
   },
   async (params) => {
@@ -54,16 +54,22 @@ server.tool(
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort level.'),
     provider: z.enum(['auto', 'enmaas', 'vertex']).nullish().default('auto').describe('Inference provider: "auto" (default), "enmaas" (requires ENMAAS_KEY), or "vertex".'),
     primaryProject: z.string().optional().describe('Primary GCP project ID for Vertex AI execution.'),
+    project: z.string().optional().describe('Alias for primaryProject.'),
     secondaryProject: z.string().optional().describe('Secondary GCP project ID for automatic quota/budget failover.'),
     secondaryCredentials: z.string().optional().describe('Path to secondary GCP service account credentials JSON.'),
     tertiaryProject: z.string().optional().describe('Tertiary GCP project ID for isolated quota failover (e.g. cnv-ai-insights).'),
     tertiaryCredentials: z.string().optional().describe('Path to tertiary GCP service account credentials JSON.'),
     primaryCredentials: z.string().optional().describe('Path to primary GCP service account credentials JSON.'),
+    credentials: z.string().optional().describe('Alias for primaryCredentials.'),
     systemPrompt: z.string().optional().describe('System prompt override (--system-prompt).'),
     sessionId: z.string().optional().describe('Resume a previous session by ID'),
     cwd: z.string().optional().describe('Working directory for Claude CLI'),
   },
-  async (params) => buildCommand(params),
+  async (params) => buildCommand({
+    ...params,
+    primaryProject: params.primaryProject || params.project,
+    primaryCredentials: params.primaryCredentials || params.credentials,
+  }),
 );
 
 const transport = new StdioServerTransport();

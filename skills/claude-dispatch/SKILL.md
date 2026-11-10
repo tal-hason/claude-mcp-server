@@ -21,7 +21,7 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 
 ### Tool Parameters
 
-- `prompt` (string, required): Task prompt to execute.
+- `prompt` (string, required): Task prompt to execute (combined `prompt` and `systemPrompt` capped at 100KB to prevent argument buffer overflow).
 - `mode` (string, optional): `architect`, `planner`, `reviewer`, `explorer`, `executor`.
 - `model` (string, optional): Target model name (e.g. `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/zai-org/glm-5-3`).
 - `secondaryModel` (string, optional): Fallback model name for cross-provider failover (defaults to Sonnet).
@@ -55,6 +55,7 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
   - **Prompt Efficiency**: Prompts and system prompts are written once to private subshell temp files (`$_pfile`, `$_spfile`) and piped via stdin or file redirection, preventing command-line argument length (`E2BIG`) overflow.
   - **Sticky Failover**: Success on a fallback tier drops a sticky marker in `_marker_dir` (backed by `XDG_RUNTIME_DIR` or `/tmp`) to fast-path subsequent runs without repeating failed tiers. Success on Tier 1 clears fallback markers.
   - **Security Redaction**: Stderr error logs pipe through automated redaction filtering Bearer, Basic, Proxy-Authorization, private_key_id, ENMAAS_KEY, PEM certificates, sk-ant-, ya29., and sensitive tokens before emitting to stderr. Stdout output is buffered and emitted unmodified on success.
+  - **Execution Timeout**: Configured via `CLAUDE_TIMEOUT` (defaults to `1800` seconds / 30m). A tier execution exceeding this limit exits with code 124 and triggers failover to the next tier.
 
 ### Google Cloud Vertex AI
 - Default provider for standard Claude models (`claude-sonnet-4-6`, `claude-opus-4-8`).
