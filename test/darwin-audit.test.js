@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildCommand } from '../command-builder.js';
 import { resolveFailoverConfig } from '../failover.js';
+import { resolveGcpProjects } from '../providers.js';
 import { createEnvScrubber, TRACKED_ENV_VARS } from './helpers/env.js';
 
 const scrubber = createEnvScrubber();
@@ -329,3 +330,465 @@ exit 1
     }
   });
 });
+
+describe('Farley ATDD T-1: resolveGcpProjects Parameter Resolution (providers.js)', () => {
+  it('resolves primaryProject and explicitPrimaryProject from params.project (T-1)', () => {
+    const res = resolveGcpProjects({ project: 'proj-abc', credentials: 'creds-xyz' }, {});
+    assert.strictEqual(res.primaryProject, 'proj-abc', 'primaryProject must inherit params.project');
+    assert.strictEqual(res.explicitPrimaryProject, 'proj-abc', 'explicitPrimaryProject must inherit params.project');
+    assert.strictEqual(res.primaryCredentials, 'creds-xyz', 'primaryCredentials must inherit params.credentials');
+    assert.strictEqual(res.explicitPrimaryCredentials, 'creds-xyz', 'explicitPrimaryCredentials must inherit params.credentials');
+  });
+
+  it('prefers explicit primaryProject over legacy project parameter (T-1)', () => {
+    const res = resolveGcpProjects({ primaryProject: 'explicit-p1', project: 'legacy-p1' }, {});
+    assert.strictEqual(res.primaryProject, 'explicit-p1');
+    assert.strictEqual(res.explicitPrimaryProject, 'explicit-p1');
+  });
+});
+
+describe('Farley ATDD T-2 & T-3: System Prompt File vs Inlined Argument Assembly (command-builder.js)', () => {
+  it('passes system prompt via file $(cat _spfile) when failover is enabled (T-2)', () => {
+    const res = buildCommand({
+      prompt: 'test prompt',
+      systemPrompt: 'System instruction test',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    assert.equal(res.isError, undefined);
+    const parsed = JSON.parse(res.content[0].text);
+    assert.ok(
+      parsed.command.includes('--system-prompt "$(< "$_spfile")"'),
+      'Failover cascade must pass file-based system prompt --system-prompt "$(< "$_spfile")" to prevent E2BIG'
+    );
+  });
+
+  it('uses inlined system prompt when failover is disabled (T-3)', () => {
+    const res = buildCommand({
+      prompt: 'test prompt',
+      systemPrompt: 'System instruction test',
+    });
+    assert.equal(res.isError, undefined);
+    const parsed = JSON.parse(res.content[0].text);
+    assert.ok(
+      parsed.command.includes("--system-prompt 'System instruction test'"),
+      'Non-failover command must use inlined system prompt'
+    );
+    assert.ok(
+      !parsed.command.includes('--system-prompt "$(< "$_spfile")"'),
+      'Non-failover command must not reference _spfile in args'
+    );
+  });
+});
+
+describe('Farley ATDD T-5: Timeout Process Group Termination Without Foreground (failover-scripts.js)', () => {
+  it('invokes GNU timeout without --foreground to ensure process group creation (T-5)', () => {
+    const res = buildCommand({
+      prompt: 'test timeout foreground',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+
+    assert.ok(!cmd.includes('timeout --foreground'), 'timeout must not include --foreground');
+    assert.ok(cmd.includes('timeout --kill-after=10s'), 'timeout must include --kill-after=10s');
+  });
+
+  it('terminates background child processes cleanly on timeout (T-5)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t5-'));
+    try {
+      const childPidFile = path.join(tmpDir, 'child.pid');
+      const mockBin = path.join(tmpDir, 'mock-spawn-sleep.sh');
+      fs.writeFileSync(mockBin, `#!/bin/bash
+sleep 20 &
+echo $! > "${childPidFile}"
+sleep 10
+exit 0
+`, { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test timeout orphan',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+
+      let exitCode = 0;
+      try {
+        execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, CLAUDE_TIMEOUT: '1', XDG_RUNTIME_DIR: tmpDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        exitCode = err.status;
+      }
+
+      assert.strictEqual(exitCode, 124, 'Command must exit with code 124 on timeout');
+      if (fs.existsSync(childPidFile)) {
+        const childPid = fs.readFileSync(childPidFile, 'utf8').trim();
+        if (childPid) {
+          let isAlive = false;
+          try {
+            process.kill(parseInt(childPid, 10), 0);
+            isAlive = true;
+          } catch (_) {}
+          assert.strictEqual(isAlive, false, 'Background child process must be terminated by process group kill');
+        }
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Farley ATDD T-6: Concurrent Session Isolation and Buffer Scoping (failover-scripts.js)', () => {
+  it('Session 1 trap removes out.$$.* without touching Session 2 buffer file in shared marker dir (T-6)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t6-'));
+    try {
+      const session2Buffer = path.join(tmpDir, 'out.99999.sess2');
+      fs.writeFileSync(session2Buffer, 'session-2-active-data');
+
+      const mockBin = path.join(tmpDir, 'mock-claude.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "SESSION_1_SUCCESS"\nexit 0\n', { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test concurrent isolation',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+
+      assert.ok(parsed.command.includes('out.$$'), 'Buffer files must be PID-scoped (out.$$.*) to isolate concurrent sessions');
+      assert.ok(!parsed.command.includes('rm -f "$_marker_dir"/out.*'), 'Cleanup trap must not wildcard delete out.*');
+
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      assert.ok(fs.existsSync(session2Buffer), 'Session 2 buffer file must not be deleted by Session 1 trap cleanup');
+      assert.strictEqual(fs.readFileSync(session2Buffer, 'utf8'), 'session-2-active-data');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Farley ATDD T-7: Sticky Marker Creation, Absence on Failure, and Deletion Lifecycle (failover-scripts.js)', () => {
+  let tmpDir, mockBin, behaviorFile;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t7-'));
+    mockBin = path.join(tmpDir, 'mock-claude.sh');
+    behaviorFile = path.join(tmpDir, 'behavior.txt');
+
+    const stub = `#!/bin/bash
+if [ -n "$MOCK_BEHAVIOR_FILE" ] && [ -f "$MOCK_BEHAVIOR_FILE" ]; then
+  ACTION=$(head -n 1 "$MOCK_BEHAVIOR_FILE")
+  tail -n +2 "$MOCK_BEHAVIOR_FILE" > "$MOCK_BEHAVIOR_FILE.tmp" 2>/dev/null && mv "$MOCK_BEHAVIOR_FILE.tmp" "$MOCK_BEHAVIOR_FILE"
+  case "$ACTION" in
+    FAIL_INFRA)
+      echo "HTTP 500 Internal Server Error" >&2
+      exit 1
+      ;;
+    SUCCESS_*)
+      echo "SUCCESS: $ACTION"
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+fi
+exit 0
+`;
+    fs.writeFileSync(mockBin, stub, { mode: 0o755 });
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+  });
+
+  it('touches sticky marker on secondary success in dual-subshell (T-7)', () => {
+    fs.writeFileSync(behaviorFile, 'FAIL_INFRA\nSUCCESS_SECONDARY\n');
+    const res = buildCommand({
+      prompt: 'test dual marker',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockBin });
+
+    const parsed = JSON.parse(res.content[0].text);
+    execSync('bash', {
+      input: parsed.command,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const markers = fs.readdirSync(tmpDir).filter(f => f.startsWith('failover_'));
+    assert.strictEqual(markers.length, 1, 'Sticky marker must be created on secondary success');
+  });
+
+  it('does NOT touch sticky marker when secondary fails in dual-subshell (T-7)', () => {
+    fs.writeFileSync(behaviorFile, 'FAIL_INFRA\nFAIL_INFRA\n');
+    const res = buildCommand({
+      prompt: 'test dual marker fail',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockBin });
+
+    const parsed = JSON.parse(res.content[0].text);
+    try {
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch (_) {}
+
+    const markers = fs.readdirSync(tmpDir).filter(f => f.startsWith('failover_'));
+    assert.strictEqual(markers.length, 0, 'Sticky marker must NOT be created when secondary fails');
+  });
+
+  it('deletes stale sticky marker when Tier 1 succeeds directly (T-7)', () => {
+    const res = buildCommand({
+      prompt: 'test tier 1 clean',
+      mode: 'executor',
+      provider: 'enmaas',
+      secondaryProject: 'p2',
+      tertiaryProject: 'p3',
+    }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockBin });
+
+    const parsed = JSON.parse(res.content[0].text);
+    const mMatch = parsed.command.match(/_marker_t2="\$[^"]+\/([^"]+)"/);
+    assert.ok(mMatch, 'Must find _marker_t2 in cascade script');
+    const markerFile = path.join(tmpDir, mMatch[1]);
+    fs.writeFileSync(markerFile, 'stale');
+    const fortyMinutesAgo = new Date(Date.now() - 40 * 60 * 1000);
+    fs.utimesSync(markerFile, fortyMinutesAgo, fortyMinutesAgo);
+
+    fs.writeFileSync(behaviorFile, 'SUCCESS_PRIMARY\n');
+    execSync('bash', {
+      input: parsed.command,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir, ENMAAS_KEY: 'test-key' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    assert.ok(!fs.existsSync(markerFile), 'Sticky marker must be deleted when Tier 1 succeeds');
+  });
+});
+
+describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (failover-scripts.js)', () => {
+  it('disarms traps and does not invoke kill -- -$$ on signal exit (T-8)', () => {
+    const res = buildCommand({
+      prompt: 'test trap disarm',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+
+    assert.ok(cmd.includes('trap - INT TERM EXIT'), 'Cleanup trap must disarm INT TERM EXIT signals');
+    assert.ok(!cmd.includes('kill -- -$$'), 'Cleanup trap must not signal parent process group with kill -- -$$');
+    assert.ok(cmd.includes("trap '_cleanup 143' TERM"), 'TERM trap must exit with code 143');
+    assert.ok(cmd.includes("trap '_cleanup 130' INT"), 'INT trap must exit with code 130');
+  });
+
+  it('exits with code 143 when receiving SIGTERM without terminating parent runner (T-8)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t8-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock-sleep.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\nsleep 30\n', { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test sigterm',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+
+      const runScript = path.join(tmpDir, 'run.sh');
+      fs.writeFileSync(runScript, '#!/bin/bash\n' + parsed.command + '\n', { mode: 0o755 });
+
+      const script = `
+        "${runScript}" >/dev/null 2>&1 &
+        PID=$!
+        sleep 0.2
+        kill -TERM $PID 2>/dev/null || true
+        wait $PID
+        echo "EXIT_CODE=$?"
+      `;
+      const out = execSync(script, {
+        shell: '/bin/bash',
+        env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString();
+
+      assert.ok(out.includes('EXIT_CODE=143'), `Expected exit code 143 on SIGTERM, got: ${out.trim()}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Farley ATDD T-9: Node and Formatter Preflight Validation (command-builder.js)', () => {
+  it('generates preflight check for node binary and format-stream.js (T-9)', () => {
+    const res = buildCommand({ prompt: 'test preflight', mode: 'architect' });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+
+    assert.ok(
+      cmd.includes('command -v node >/dev/null 2>&1 && [ -f'),
+      'Command must check that node binary and format-stream.js exist'
+    );
+    assert.ok(
+      cmd.includes('[claude-mcp] Error: node or formatter missing'),
+      'Command must output exact preflight error message on failure'
+    );
+  });
+
+  it('fails fast with code 1 and error message when node binary is missing from PATH (T-9)', () => {
+    const res = buildCommand({ prompt: 'test preflight fail', mode: 'architect' });
+    const parsed = JSON.parse(res.content[0].text);
+
+    const mockBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-mock-bin-'));
+    let failed = false;
+    let stderr = '';
+    let exitCode = 0;
+    try {
+      const bashBin = execSync('which bash').toString().trim();
+      const dateBin = execSync('which date').toString().trim();
+      fs.symlinkSync(bashBin, path.join(mockBinDir, 'bash'));
+      fs.symlinkSync(dateBin, path.join(mockBinDir, 'date'));
+
+      try {
+        execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, PATH: mockBinDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        failed = true;
+        exitCode = err.status;
+        stderr = err.stderr ? err.stderr.toString() : '';
+      }
+    } finally {
+      fs.rmSync(mockBinDir, { recursive: true, force: true });
+    }
+
+    assert.ok(failed, 'Command must exit with non-zero when node is missing');
+    assert.strictEqual(exitCode, 1, 'Command must exit with code 1 when preflight check fails');
+    assert.ok(
+      stderr.includes('[claude-mcp] Error: node or formatter missing'),
+      `Stderr must contain preflight error, got: ${stderr}`
+    );
+  });
+});
+
+describe('Farley ATDD T-10: Sticky Marker Expiration and Bypass Lifecycle (failover-scripts.js)', () => {
+  let tmpDir, mockBin, behaviorFile;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t10-'));
+    mockBin = path.join(tmpDir, 'mock-claude.sh');
+    behaviorFile = path.join(tmpDir, 'behavior.txt');
+
+    const stub = `#!/bin/bash
+if [ -n "$MOCK_BEHAVIOR_FILE" ] && [ -f "$MOCK_BEHAVIOR_FILE" ]; then
+  ACTION=$(head -n 1 "$MOCK_BEHAVIOR_FILE")
+  tail -n +2 "$MOCK_BEHAVIOR_FILE" > "$MOCK_BEHAVIOR_FILE.tmp" 2>/dev/null && mv "$MOCK_BEHAVIOR_FILE.tmp" "$MOCK_BEHAVIOR_FILE"
+  case "$ACTION" in
+    SUCCESS_*)
+      echo "AUDIT_SUCCESS: $ACTION proj=$ANTHROPIC_VERTEX_PROJECT_ID"
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+fi
+exit 0
+`;
+    fs.writeFileSync(mockBin, stub, { mode: 0o755 });
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+  });
+
+  it('fresh sticky marker (mtime < 30m) routes directly to Tier 2 (T-10)', () => {
+    const res = buildCommand({
+      prompt: 'test fresh marker',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockBin });
+
+    const parsed = JSON.parse(res.content[0].text);
+    const mMatch = parsed.command.match(/_marker="\$[^"]+\/([^"]+)"/);
+    assert.ok(mMatch, 'Must find marker name in script');
+    const markerFile = path.join(tmpDir, mMatch[1]);
+    fs.writeFileSync(markerFile, 'active');
+
+    fs.writeFileSync(behaviorFile, 'SUCCESS_SECONDARY\n');
+    const out = execSync('bash', {
+      input: parsed.command,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString();
+
+    assert.ok(out.includes('AUDIT_SUCCESS: SUCCESS_SECONDARY'));
+    assert.ok(out.includes('proj=p2'), 'Must run with secondary project p2');
+  });
+
+  it('expired sticky marker (mtime > 30m) bypasses failover and runs Tier 1 (T-10)', () => {
+    const res = buildCommand({
+      prompt: 'test expired marker',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockBin });
+
+    const parsed = JSON.parse(res.content[0].text);
+    const mMatch = parsed.command.match(/_marker="\$[^"]+\/([^"]+)"/);
+    assert.ok(mMatch, 'Must find marker name in script');
+    const markerFile = path.join(tmpDir, mMatch[1]);
+
+    fs.writeFileSync(markerFile, 'stale');
+    const fortyMinutesAgo = new Date(Date.now() - 40 * 60 * 1000);
+    fs.utimesSync(markerFile, fortyMinutesAgo, fortyMinutesAgo);
+
+    fs.writeFileSync(behaviorFile, 'SUCCESS_PRIMARY\n');
+    const out = execSync('bash', {
+      input: parsed.command,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString();
+
+    assert.ok(out.includes('AUDIT_SUCCESS: SUCCESS_PRIMARY'));
+    assert.ok(out.includes('proj=p1'), 'Must run with primary project p1');
+  });
+});
+

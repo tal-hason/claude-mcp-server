@@ -272,7 +272,7 @@ fi
   });
 
   it('Tier 1 infra error routes to Tier 2, and Tier 2 failure cascades to Tier 3 (F-2, F-9)', () => {
-    fs.writeFileSync(behaviorFile, 'INFRA_503\nUSER_401\nSUCCESS_TIER3_AFTER_T2\n');
+    fs.writeFileSync(behaviorFile, 'INFRA_503\nINFRA_503\nSUCCESS_TIER3_AFTER_T2\n');
     const res = buildCommand({
       prompt: 'test prompt',
       mode: 'executor',
@@ -290,6 +290,68 @@ fi
 
     assert.ok(out.includes('TIER_SUCCESS: SUCCESS_TIER3_AFTER_T2'), 'Tier 3 must succeed after Tier 2 failure');
     assert.ok(out.includes('proj=proj-t3-isolated'), 'Tier 3 must run with tertiary project');
+  });
+
+  it('Tier 1 infra error routes to Tier 2, and Tier 2 user error is vetoed without calling Tier 3 (F-4)', () => {
+    fs.writeFileSync(behaviorFile, 'INFRA_503\nUSER_401\nSUCCESS_SHOULD_NOT_RUN\n');
+    const res = buildCommand({
+      prompt: 'test prompt',
+      mode: 'executor',
+      provider: 'enmaas',
+      secondaryProject: 'proj-t2-shared',
+      tertiaryProject: 'proj-t3-isolated',
+    }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockClaudeBin });
+
+    const parsed = JSON.parse(res.content[0].text);
+    let failed = false;
+    let stderr = '';
+    try {
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, ENMAAS_KEY: 'test-key', XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch (err) {
+      failed = true;
+      stderr = err.stderr ? err.stderr.toString() : '';
+    }
+
+    assert.ok(failed, 'Command must exit with non-zero on Tier 2 user error veto');
+    assert.ok(stderr.includes('401 Unauthorized'), 'Stderr must contain user error');
+    assert.ok(!stderr.includes('Routing to Tier 3'), 'Tier 3 must not be routed to');
+    const remaining = fs.readFileSync(behaviorFile, 'utf8');
+    assert.ok(remaining.includes('SUCCESS_SHOULD_NOT_RUN'), 'Tier 3 must never be executed after Tier 2 user error veto');
+  });
+
+  it('Tier 1 shared-quota routes to Tier 3, and Tier 3 user error is vetoed without falling back to Tier 2 (F-4)', () => {
+    fs.writeFileSync(behaviorFile, 'QUOTA_429\nUSER_401\nSUCCESS_SHOULD_NOT_RUN\n');
+    const res = buildCommand({
+      prompt: 'test prompt',
+      mode: 'executor',
+      provider: 'enmaas',
+      secondaryProject: 'proj-t2-shared',
+      tertiaryProject: 'proj-t3-isolated',
+    }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockClaudeBin });
+
+    const parsed = JSON.parse(res.content[0].text);
+    let failed = false;
+    let stderr = '';
+    try {
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, ENMAAS_KEY: 'test-key', XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch (err) {
+      failed = true;
+      stderr = err.stderr ? err.stderr.toString() : '';
+    }
+
+    assert.ok(failed, 'Command must exit with non-zero on Tier 3 user error veto');
+    assert.ok(stderr.includes('401 Unauthorized'), 'Stderr must contain user error');
+    assert.ok(!stderr.includes('Falling back to Tier 2'), 'Tier 2 fallback must not be routed to');
+    const remaining = fs.readFileSync(behaviorFile, 'utf8');
+    assert.ok(remaining.includes('SUCCESS_SHOULD_NOT_RUN'), 'Tier 2 fallback must never be executed after Tier 3 user error veto');
   });
 
   it('Tier 1 user error is vetoed and does not failover (F-4, F-5)', () => {
