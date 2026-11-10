@@ -10,6 +10,7 @@ import path from 'node:path';
 import { buildCommand } from '../command-builder.js';
 import { resolveFailoverConfig } from '../failover.js';
 import { resolveGcpProjects } from '../providers.js';
+import { REDACT_SED } from '../failover-scripts.js';
 import { createEnvScrubber, TRACKED_ENV_VARS } from './helpers/env.js';
 
 const scrubber = createEnvScrubber();
@@ -432,17 +433,29 @@ exit 0
       }
 
       assert.strictEqual(exitCode, 124, 'Command must exit with code 124 on timeout');
-      if (fs.existsSync(childPidFile)) {
-        const childPid = fs.readFileSync(childPidFile, 'utf8').trim();
-        if (childPid) {
-          let isAlive = false;
+      assert.ok(fs.existsSync(childPidFile), 'childPidFile must exist');
+      const childPid = fs.readFileSync(childPidFile, 'utf8').trim();
+      assert.ok(childPid, 'childPid must be non-empty');
+      const pidNum = parseInt(childPid, 10);
+      let isAlive = false;
+      try {
+        process.kill(pidNum, 0);
+        isAlive = true;
+        if (process.platform === 'linux') {
           try {
-            process.kill(parseInt(childPid, 10), 0);
-            isAlive = true;
-          } catch (_) {}
-          assert.strictEqual(isAlive, false, 'Background child process must be terminated by process group kill');
+            const status = fs.readFileSync(`/proc/${pidNum}/status`, 'utf8');
+            const stateMatch = status.match(/^State:\s+([A-Z])/m);
+            if (stateMatch && (stateMatch[1] === 'Z' || stateMatch[1] === 'X')) {
+              isAlive = false;
+            }
+          } catch (_) {
+            isAlive = false;
+          }
         }
+      } catch (_) {
+        isAlive = false;
       }
+      assert.strictEqual(isAlive, false, 'Background child process must be terminated by process group kill');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -453,7 +466,9 @@ describe('Farley ATDD T-6: Concurrent Session Isolation and Buffer Scoping (fail
   it('Session 1 trap removes out.$$.* without touching Session 2 buffer file in shared marker dir (T-6)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t6-'));
     try {
-      const session2Buffer = path.join(tmpDir, 'out.99999.sess2');
+      const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
+      fs.mkdirSync(markerDir, { recursive: true });
+      const session2Buffer = path.join(markerDir, 'out.99999.sess2');
       fs.writeFileSync(session2Buffer, 'session-2-active-data');
 
       const mockBin = path.join(tmpDir, 'mock-claude.sh');
@@ -469,15 +484,29 @@ describe('Farley ATDD T-6: Concurrent Session Isolation and Buffer Scoping (fail
 
       const parsed = JSON.parse(res.content[0].text);
 
-      assert.ok(parsed.command.includes('out.$$'), 'Buffer files must be PID-scoped (out.$$.*) to isolate concurrent sessions');
+      assert.ok(parsed.command.includes('out.$$.*'), 'Buffer files must be PID-scoped (out.$$.*) to isolate concurrent sessions');
+      assert.ok(!parsed.command.includes('rm -f "$_marker_dir"/out.$$*'), 'Cleanup trap must have dot after $$ (out.$$.*)');
       assert.ok(!parsed.command.includes('rm -f "$_marker_dir"/out.*'), 'Cleanup trap must not wildcard delete out.*');
 
-      execSync('bash', {
-        input: parsed.command,
+      const testCollisionFile = path.join(tmpDir, 'test-collision.sh');
+      fs.writeFileSync(testCollisionFile, `#!/bin/bash
+PID=$$
+COLLIDE="${markerDir}/out.\${PID}99.test"
+echo "colliding" > "$COLLIDE"
+${parsed.command}
+if [ -f "$COLLIDE" ]; then
+  echo "COLLIDE_PRESERVED"
+else
+  echo "COLLIDE_DELETED"
+fi
+`, { mode: 0o755 });
+
+      const runOut = execSync(testCollisionFile, {
         env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
         stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      }).toString();
 
+      assert.ok(runOut.includes('COLLIDE_PRESERVED'), 'out.$$.* cleanup must not delete colliding PID prefix file');
       assert.ok(fs.existsSync(session2Buffer), 'Session 2 buffer file must not be deleted by Session 1 trap cleanup');
       assert.strictEqual(fs.readFileSync(session2Buffer, 'utf8'), 'session-2-active-data');
     } finally {
@@ -538,7 +567,8 @@ exit 0
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const markers = fs.readdirSync(tmpDir).filter(f => f.startsWith('failover_'));
+    const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
+    const markers = (fs.existsSync(markerDir) ? fs.readdirSync(markerDir) : []).filter(f => f.startsWith('failover_'));
     assert.strictEqual(markers.length, 1, 'Sticky marker must be created on secondary success');
   });
 
@@ -561,7 +591,8 @@ exit 0
       });
     } catch (_) {}
 
-    const markers = fs.readdirSync(tmpDir).filter(f => f.startsWith('failover_'));
+    const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
+    const markers = (fs.existsSync(markerDir) ? fs.readdirSync(markerDir) : []).filter(f => f.startsWith('failover_'));
     assert.strictEqual(markers.length, 0, 'Sticky marker must NOT be created when secondary fails');
   });
 
@@ -577,7 +608,9 @@ exit 0
     const parsed = JSON.parse(res.content[0].text);
     const mMatch = parsed.command.match(/_marker_t2="\$[^"]+\/([^"]+)"/);
     assert.ok(mMatch, 'Must find _marker_t2 in cascade script');
-    const markerFile = path.join(tmpDir, mMatch[1]);
+    const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
+    fs.mkdirSync(markerDir, { recursive: true });
+    const markerFile = path.join(markerDir, mMatch[1]);
     fs.writeFileSync(markerFile, 'stale');
     const fortyMinutesAgo = new Date(Date.now() - 40 * 60 * 1000);
     fs.utimesSync(markerFile, fortyMinutesAgo, fortyMinutesAgo);
@@ -748,7 +781,9 @@ exit 0
     const parsed = JSON.parse(res.content[0].text);
     const mMatch = parsed.command.match(/_marker="\$[^"]+\/([^"]+)"/);
     assert.ok(mMatch, 'Must find marker name in script');
-    const markerFile = path.join(tmpDir, mMatch[1]);
+    const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
+    fs.mkdirSync(markerDir, { recursive: true });
+    const markerFile = path.join(markerDir, mMatch[1]);
     fs.writeFileSync(markerFile, 'active');
 
     fs.writeFileSync(behaviorFile, 'SUCCESS_SECONDARY\n');
@@ -774,7 +809,9 @@ exit 0
     const parsed = JSON.parse(res.content[0].text);
     const mMatch = parsed.command.match(/_marker="\$[^"]+\/([^"]+)"/);
     assert.ok(mMatch, 'Must find marker name in script');
-    const markerFile = path.join(tmpDir, mMatch[1]);
+    const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
+    fs.mkdirSync(markerDir, { recursive: true });
+    const markerFile = path.join(markerDir, mMatch[1]);
 
     fs.writeFileSync(markerFile, 'stale');
     const fortyMinutesAgo = new Date(Date.now() - 40 * 60 * 1000);
@@ -791,4 +828,304 @@ exit 0
     assert.ok(out.includes('proj=p1'), 'Must run with primary project p1');
   });
 });
+
+describe('Darwin Pass 6 Remediation: Process Safety & Sweep Hardening (C7-2, C7-4, C7-6, C7-12)', () => {
+  it('_cleanup traps and _run_to properly handle timeout process group signaling (C7-2 / T-P6-2)', () => {
+    const res = buildCommand({
+      prompt: 'test pgid signal',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+    assert.ok(cmd.includes('kill -TERM -$_tp "$_tp"'), '_cleanup must signal timeout process group leader with kill -TERM -$_tp "$_tp"');
+    assert.ok(cmd.includes('[ "$_tp" -gt 1 ]'), '_cleanup must guard $_tp > 1');
+    assert.ok(cmd.includes('& _tp=$!; wait "$_tp" || _r=$?; _tp=;'), '_run_to must background timeout and wait for $_tp');
+    assert.ok(!cmd.includes('kill -- -$$'), 'must not kill parent shell group -$$');
+  });
+
+  it('failover scripts handle exit code 137 alongside 124 for timeout cascades (C7-4 / T-P6-4)', () => {
+    const res = buildCommand({
+      prompt: 'test exit 137',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+    assert.ok(cmd.includes('[ "$_code" -eq 124 ] || [ "$_code" -eq 137 ]'), 'Must check exit code 137 alongside 124');
+
+    const resCascade = buildCommand({
+      prompt: 'test cascade 137',
+      mode: 'executor',
+      provider: 'enmaas',
+      secondaryProject: 'p2',
+      tertiaryProject: 'p3',
+    }, { ENMAAS_KEY: 'test-key' });
+    const parsedCascade = JSON.parse(resCascade.content[0].text);
+    assert.ok(parsedCascade.command.includes('[ "$_code" -eq 124 ] || [ "$_code" -eq 137 ]'), 'Cascade script must check exit code 137 alongside 124');
+  });
+
+  it('Tier 1 exit code 137 (SIGKILL timeout) triggers secondary failover (C7-4 / T-P6-4)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t137-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock-claude.sh');
+      const behaviorFile = path.join(tmpDir, 'behavior.txt');
+      fs.writeFileSync(behaviorFile, 'FAIL_137\nSUCCESS_SECONDARY\n');
+
+      const stub = `#!/bin/bash
+if [ -n "$MOCK_BEHAVIOR_FILE" ] && [ -f "$MOCK_BEHAVIOR_FILE" ]; then
+  ACTION=$(head -n 1 "$MOCK_BEHAVIOR_FILE")
+  tail -n +2 "$MOCK_BEHAVIOR_FILE" > "$MOCK_BEHAVIOR_FILE.tmp" 2>/dev/null && mv "$MOCK_BEHAVIOR_FILE.tmp" "$MOCK_BEHAVIOR_FILE"
+  case "$ACTION" in
+    FAIL_137)
+      echo "Simulating timeout SIGKILL" >&2
+      exit 137
+      ;;
+    SUCCESS_*)
+      echo "AUDIT_SUCCESS: $ACTION proj=$ANTHROPIC_VERTEX_PROJECT_ID"
+      exit 0
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+fi
+exit 0
+`;
+      fs.writeFileSync(mockBin, stub, { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test exit 137 runtime',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      const out = execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString();
+
+      assert.ok(out.includes('AUDIT_SUCCESS: SUCCESS_SECONDARY'), 'Must route to secondary on exit code 137');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('failover script uses umask 077 for temp files and restores ambient umask before tier execution (C7-12 / T-P6-6)', () => {
+    const res = buildCommand({
+      prompt: 'test umask restore',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+    assert.ok(cmd.includes('_ou=$(umask)'), 'Must save ambient umask');
+    assert.ok(cmd.includes('umask "$_ou"'), 'Must restore ambient umask');
+  });
+
+  it('restores ambient umask so child process executes with ambient umask (C7-12 / T-P6-6)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-umask-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock-umask.sh');
+      const umaskCapture = path.join(tmpDir, 'captured_umask.txt');
+      fs.writeFileSync(mockBin, `#!/bin/bash
+umask > "${umaskCapture}"
+echo "SUCCESS"
+exit 0
+`, { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test umask runtime',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      assert.ok(fs.existsSync(umaskCapture), 'Captured umask file must exist');
+      const captured = fs.readFileSync(umaskCapture, 'utf8').trim();
+      assert.notStrictEqual(captured, '0077', 'Child process umask must NOT remain restricted 0077');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marker cleanup sweep uses -type f and -mmin +180, preserving directories (C7-6 / T-P6-8)', () => {
+    const res = buildCommand({
+      prompt: 'test find sweep',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+    assert.ok(cmd.includes('-type f'), 'Find sweep must include -type f');
+    assert.ok(cmd.includes('-mmin +180'), 'Find sweep threshold must be 180m');
+    assert.ok(!cmd.includes('-mmin +60'), 'Old 60m threshold must be removed');
+  });
+
+  it('preserves directories and files younger than 180m inside marker dir (C7-6 / T-P6-8)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-sweep-'));
+    try {
+      const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
+      fs.mkdirSync(markerDir, { recursive: true });
+      const oldDir = path.join(markerDir, 'err.olddir');
+      fs.mkdirSync(oldDir);
+      const fourHoursAgo = new Date(Date.now() - 240 * 60 * 1000);
+      fs.utimesSync(oldDir, fourHoursAgo, fourHoursAgo);
+
+      const midFile = path.join(markerDir, 'out.midfile');
+      fs.writeFileSync(midFile, 'active-cascade-data');
+      const twoHoursAgo = new Date(Date.now() - 120 * 60 * 1000);
+      fs.utimesSync(midFile, twoHoursAgo, twoHoursAgo);
+
+      const oldFile = path.join(markerDir, 'out.oldfile');
+      fs.writeFileSync(oldFile, 'stale-data');
+      fs.utimesSync(oldFile, fourHoursAgo, fourHoursAgo);
+
+      const mockBin = path.join(tmpDir, 'mock-claude.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "SUCCESS"\nexit 0\n', { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test sweep runtime',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      assert.ok(fs.existsSync(oldDir), 'Directories inside marker dir must NOT be deleted by sweep');
+      assert.ok(fs.existsSync(midFile), 'Files between 60m and 180m old must NOT be deleted by sweep');
+      assert.ok(!fs.existsSync(oldFile), 'Files older than 180m must be swept');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Darwin Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T-P6-7, T-P6-9)', () => {
+  it('redacts multi-line PEM blocks without swallowing subsequent lines (C7-7)', () => {
+    assert.ok(!REDACT_SED.includes('/c\\\\'), 'REDACT_SED must not use non-portable c\\ sed command');
+    assert.ok(REDACT_SED.includes('/-----BEGIN/!d'), 'REDACT_SED must use portable /-----BEGIN/!d sed pattern');
+
+    const input = 'Header info\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----\nImportant trailing log line\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(out.includes('[REDACTED_PEM]'), 'PEM block must be redacted');
+    assert.ok(out.includes('Important trailing log line'), 'Trailing lines after PEM must be preserved');
+    assert.ok(!out.includes('MIIEowIBAAKCAQEA0'), 'Private key body must not appear');
+  });
+
+  it('redacts Authorization: token and custom scheme headers (C7-8)', () => {
+    const input = 'Authorization: token secret-ghp-token-12345\nproxy-authorization: basic user:pass\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('secret-ghp-token-12345'), 'Token scheme value must be redacted');
+    assert.ok(out.includes('[REDACTED]'), 'Must replace with [REDACTED]');
+  });
+
+  it('redacts quoted keys with space-bearing values (C7-9)', () => {
+    const input = '{"api_key": "secret value with spaces"}\nsecret=\'another secret with spaces\'\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('secret value with spaces'), 'Secret with spaces must be redacted');
+    assert.ok(!out.includes('another secret with spaces'), 'Quoted secret with spaces must be redacted');
+    assert.ok(!out.includes('with spaces'), 'Space-bearing part of secret must not leak');
+  });
+
+  it('redacts GitLab tokens and diverse GitHub token formats (C7-9)', () => {
+    const input = 'glpat-xxxxxxxxxxxxxxxxxxxx\ngho_1234567890abcdef\nghs_1234567890abcdef\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('glpat-xxxxxxxxxxxxxxxxxxxx'), 'GitLab PAT must be redacted');
+    assert.ok(!out.includes('gho_1234567890abcdef'), 'GitHub OAuth token must be redacted');
+    assert.ok(!out.includes('ghs_1234567890abcdef'), 'GitHub server token must be redacted');
+  });
+
+  it('redacts JSON cookies and header cookies without eating trailing fields (C7-10)', () => {
+    const input = '{"cookie": "session_id=abcdef123456; domain=.example.com", "other": "ok"}\nCookie: auth=xyz789\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('session_id=abcdef123456'), 'JSON cookie value must be redacted');
+    assert.ok(!out.includes('auth=xyz789'), 'Cookie header value must be redacted');
+    assert.ok(out.includes('"other": "ok"'), 'Other JSON fields must not be swallowed');
+  });
+
+  it('single-line PEM redaction preserves subsequent stderr lines without runaway deletion (HIGH-2)', () => {
+    const input = 'First line\n-----BEGIN RSA PRIVATE KEY----- single line body -----END RSA PRIVATE KEY-----\nSubsequent line preserved\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(out.includes('[REDACTED_PEM]'), 'Single-line PEM block must be redacted');
+    assert.ok(out.includes('First line'), 'Preceding log line must be preserved');
+    assert.ok(out.includes('Subsequent line preserved'), 'Subsequent stderr line must not be swallowed');
+    assert.ok(!out.includes('single line body'), 'PEM body must not appear');
+  });
+
+  it('redacts quoted Authorization: Bearer headers (HIGH-3)', () => {
+    const input = 'Authorization: Bearer "secret-token-double-quoted"\nAuthorization: Bearer \'secret-token-single-quoted\'\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('secret-token-double-quoted'), 'Double quoted bearer token must be redacted');
+    assert.ok(!out.includes('secret-token-single-quoted'), 'Single quoted bearer token must be redacted');
+    assert.ok(out.includes('Authorization: Bearer [REDACTED]'), 'Authorization header prefix must be preserved');
+  });
+
+  it('redacts github_pat_ fine-grained personal access tokens (MEDIUM-2)', () => {
+    const input = 'github_pat_11AAAAAAA0123456789_abcdefghijklmnopqrstuvwxyz01234567890123456789\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('abcdefghijklmnopqrstuvwxyz'), 'Fine-grained PAT body must be redacted');
+    assert.ok(out.includes('github_pat_11AA[REDACTED]'), 'Fine-grained PAT must be redacted with prefix preserved');
+  });
+
+  it('XDG_RUNTIME_DIR expansion creates /claude-cli-$_uid subdirectory (MEDIUM-1)', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-xdg-test-'));
+    try {
+      const mockBin = path.join(baseDir, 'mock.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "OK"\nexit 0\n', { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test xdg subdirectory',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, XDG_RUNTIME_DIR: baseDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const uid = process.getuid ? process.getuid() : 0;
+      const expectedSubdir = path.join(baseDir, `claude-cli-${uid}`);
+      assert.ok(fs.existsSync(expectedSubdir), `Subdirectory ${expectedSubdir} must be created`);
+      assert.ok(fs.statSync(expectedSubdir).isDirectory(), 'Created path must be a directory');
+    } finally {
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+});
+
 

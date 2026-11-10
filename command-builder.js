@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { MODES, MODE_NAMES, getModeDefaultModel } from './modes.js';
 import { resolveProvider, buildProviderEnv, supportsEffort } from './providers.js';
 import { resolveFailoverConfig, resolveSecondaryModel, buildFailoverScript } from './failover.js';
+import { REDACT_SED } from './failover-scripts.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const FORMATTER_PATH = join(__dirname, 'stream-format.js');
@@ -78,7 +79,7 @@ export function buildCommand(params, env = process.env) {
       prompt: params.prompt, sysPrompt: params.systemPrompt, fmt, ...failoverConfig,
     }));
   } else {
-    commandLines.push(`${envPrefix}${primaryArgs.join(' ')} <<'${delim}' | node ${fmt}`, params.prompt, delim);
+    commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | ${REDACT_SED} >&2; } 3>&1 | node ${fmt}; }`, params.prompt, delim);
   }
 
   commandLines.push(`_elapsed=$(( $(date +%s) - _start ))`, `printf '\\033[1;${c}m└─ DONE │ %ss ─┘\\033[0m\\n' "$_elapsed"`);

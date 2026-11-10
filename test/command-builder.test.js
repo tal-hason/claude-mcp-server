@@ -857,4 +857,32 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
     const execResult = execSync('bash', { input: commandStr, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
     assert.ok(execResult.includes('SECONDARY_SUCCESS'), 'Secondary should execute successfully when primary fails');
   });
+
+  it('T-37: Non-failover command redirects stderr through REDACT_SED (C7-11 / T-P6-5)', () => {
+    const res = buildCommand({ prompt: 'test non-failover redaction' });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+    assert.ok(cmd.includes('2>&1 1>&3'), 'Command must redirect stderr for redaction');
+    assert.ok(cmd.includes('3>&1'), 'Command must restore stdout descriptor');
+    assert.ok(cmd.includes('sed -E'), 'Command must pipe stderr through sed');
+  });
+
+  it('T-38: Non-failover command redacts bearer tokens emitted to stderr during runtime execution (C7-11 / T-P6-5)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-non-failover-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock-claude.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "Authorization: Bearer super-secret-token" >&2\necho "NORMAL_OUTPUT"\nexit 0\n', { mode: 0o755 });
+      const res = buildCommand({ prompt: 'test stderr leak' }, { CLAUDE_BIN: mockBin });
+      const parsed = JSON.parse(res.content[0].text);
+      const wrapperScript = `
+        OUT=$(${parsed.command} 2>"${tmpDir}/err.log")
+        cat "${tmpDir}/err.log"
+      `;
+      const capturedStderr = execSync(wrapperScript, { shell: '/bin/bash', stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+      assert.ok(!capturedStderr.includes('super-secret-token'), 'Bearer token on stderr must be redacted');
+      assert.ok(capturedStderr.includes('[REDACTED]'), 'Must contain [REDACTED]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

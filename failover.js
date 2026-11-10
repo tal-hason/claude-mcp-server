@@ -4,8 +4,6 @@
 import { resolveGcpProjects, resolveProvider } from './providers.js';
 import { quote, _buildDualSubshellScript, _buildCascadeScript } from './failover-scripts.js';
 
-export { _buildDualSubshellScript, _buildCascadeScript } from './failover-scripts.js';
-
 export function resolveFailoverConfig(provider = 'vertex', params = {}, env = process.env) {
   if (typeof provider === 'object' && provider !== null) {
     env = (params && Object.keys(params).length > 0) ? params : (env || process.env);

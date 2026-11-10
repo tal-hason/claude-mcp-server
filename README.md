@@ -86,7 +86,7 @@ Parse the response JSON, then execute the `command` field via the Shell tool.
 
 ```
 CallMcpTool: user-claude-cli / claude_prompt
-{ "prompt": "<full review prompt>", "mode": "reviewer", "model": "claude-opus-4-8" }
+{ "prompt": "<full review prompt>", "mode": "reviewer", "model": "claude-opus-5-5" }
 ```
 
 Execute the returned command with `block_until_ms: 0` to background it. Read the terminal file when done.
@@ -110,12 +110,12 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 - **Failover Triggers**:
   - Quota exhaustion: HTTP 429, `RESOURCE_EXHAUSTED`, Rate limit, credit balance, budget exceeded.
   - Gateway & Infra errors: HTTP 500, 502, 503, 504, 529, `ECONNRESET`, `ETIMEDOUT`, socket hang up, `UNAVAILABLE`.
-  - Process timeouts: Exit code 124 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
+  - Process timeouts: Exit code 124 or 137 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
 - **User Error Veto**: HTTP 400, 401, 403, and `invalid_request_error` immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
 - **Shared-Quota Bypass (Cross-Provider)**: When Tier 1 (EnMaaS) exhausts shared enterprise quota (429), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
-- **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted to prevent redundant invocations against the same project quota.
-- **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` (and any mode-appended prompt) is capped at 100KB to prevent argument buffer overflow and enforce clean streaming via temporary files (`E2BIG` prevention).
-- **Automated Stderr Redaction**: All error logs and terminal failure outputs are filtered through stream-level `sed -E` redaction to strip Bearer tokens, Basic auth, API keys, JWTs, and PEM certificate blocks prior to emitting to stderr. Redaction applies strictly to stderr error logs; successful model output on stdout is buffered and delivered unmodified.
+- **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted to prevent redundant invocations against the same project quota. Note that `primaryProject` takes precedence over the legacy `project` parameter.
+- **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` (and any mode-appended prompt) is capped at 100KB to prevent argument buffer overflow and enforce clean streaming via temporary files (`E2BIG` prevention). When failover is enabled, system prompts are safely injected via temporary file redirection (`"$(< "$_spfile")"`) rather than raw command-line argument expansion.
+- **Automated Stderr Redaction**: All error logs and terminal failure outputs across both failover cascades and single-tier commands are filtered through stream-level `sed -E` redaction to strip Bearer, Basic, and Token authorization headers, API keys, JWTs, JSON cookies, and multi-line PEM blocks prior to emitting to stderr. Redaction applies strictly to stderr error logs; successful model output on stdout is buffered and delivered unmodified.
 
 ### Parameters
 
@@ -144,6 +144,7 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 |---|---|
 | `server.js` | MCP entry point — thin wiring, delegates to command-builder |
 | `command-builder.js` | Pure logic — shellQuote, buildCommand, mode resolution |
+| `stream-format.js` | CLI streaming output formatter — strips ANSI, parses events, formats for UI |
 | `failover.js` | Failover logic — Vertex quota retry, cross-provider, & 3-tier cascade failover |
 | `failover-scripts.js` | Shell script generation — heredoc templates, sticky markers, signal traps, and redaction |
 | `providers.js` | Provider routing & environment variables configuration |

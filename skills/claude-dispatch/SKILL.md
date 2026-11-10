@@ -54,11 +54,11 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
   - **Tier 3 (Vertex Tertiary)**: Triggered if Tier 2 experiences quota exhaustion, project budget exhaustion, or IAM authorization failure.
   - **Prompt Efficiency**: Prompts and system prompts are written once to private subshell temp files (`$_pfile`, `$_spfile`) and piped via stdin or file redirection, preventing command-line argument length (`E2BIG`) overflow.
   - **Sticky Failover**: Success on a fallback tier drops a sticky marker in `_marker_dir` (backed by `XDG_RUNTIME_DIR` or `/tmp`) to fast-path subsequent runs without repeating failed tiers. Success on Tier 1 clears fallback markers.
-  - **Security Redaction**: Stderr error logs pipe through automated redaction filtering Bearer, Basic, Proxy-Authorization, private_key_id, ENMAAS_KEY, PEM certificates, sk-ant-, ya29., and sensitive tokens before emitting to stderr. Stdout output is buffered and emitted unmodified on success.
-  - **Execution Timeout**: Configured via `CLAUDE_TIMEOUT` (defaults to `1800` seconds / 30m). A tier execution exceeding this limit exits with code 124 and triggers failover to the next tier.
+  - **Security Redaction**: Stderr error logs across both failover cascades and single-tier commands pipe through automated stream-level `sed -E` redaction filtering Bearer, Basic, and Token schemes in Authorization headers, private_key_id, ENMAAS_KEY, multi-line PEM certificates, sk-ant-, ya29., glpat-, gho_/ghs_, JSON cookies, and sensitive tokens before emitting to stderr. Stdout output is buffered and emitted unmodified on success.
+  - **Execution Timeout**: Configured via `CLAUDE_TIMEOUT` (defaults to `1800` seconds / 30m). A tier execution exceeding this limit exits with code 124 or 137 and triggers failover to the next tier.
 
 ### Google Cloud Vertex AI
-- Default provider for standard Claude models (`claude-sonnet-4-6`, `claude-opus-4-8`).
+- Default provider for standard Claude models (`claude-sonnet-5-5`, `claude-opus-5-5`).
 - Uses Google Cloud ADC (`gcloud auth application-default login`) or `GOOGLE_APPLICATION_CREDENTIALS`.
 - Automatic failover: When `secondaryProject` (or `VERTEX_SECONDARY_PROJECT`) is configured, primary project quota exhaustion (`RESOURCE_EXHAUSTED`, `429`, billing limits) triggers automated failover retry on the secondary project. When `tertiaryProject` is also configured, secondary exhaustion cascades to the tertiary project.
 
