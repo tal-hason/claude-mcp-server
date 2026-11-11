@@ -79,11 +79,11 @@ export function buildCommand(params, env = process.env) {
       prompt: params.prompt, sysPrompt: params.systemPrompt, fmt, ...failoverConfig,
     }));
   } else {
-    commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | ${REDACT_SED} >&2; } 3>&1 | node ${fmt}; }`, params.prompt, delim);
+    commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | { ${REDACT_SED} || cat; } >&2; } 3>&1 | node ${fmt}; }`, params.prompt, delim);
   }
 
   commandLines.push(`_elapsed=$(( $(date +%s) - _start ))`, `printf '\\033[1;${c}m└─ DONE │ %ss ─┘\\033[0m\\n' "$_elapsed"`);
-  const command = '(set -eo pipefail; ' + commandLines.join('\n') + ')';
+  const command = failoverConfig?.enabled ? 'set -eo pipefail; ' + commandLines.join('\n') : '(set -eo pipefail; ' + commandLines.join('\n') + ')';
   const effortLabel = !supportsEffort(resolvedModel) ? 'unsupported' : (pEffort || (effort ? 'suppressed' : 'default'));
   const failoverLabel = failoverConfig?.enabled ? ` (failover: ${failoverConfig.secondaryProject}${failoverConfig.hasTertiary ? ` -> ${failoverConfig.tertiaryProject}` : ''})` : '';
   const label = `Claude CLI ${mode} [${provider}] (effort: ${effortLabel})${failoverLabel}`;

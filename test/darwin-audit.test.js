@@ -3,7 +3,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -644,14 +644,15 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
     assert.ok(cmd.includes("trap '_cleanup 130' INT"), 'INT trap must exit with code 130');
   });
 
-  it('exits with code 143 when receiving SIGTERM without terminating parent runner (T-8)', () => {
+  it('terminates process group and cleans temp files on wrapper SIGTERM (C8-1 / T-8)', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t8-'));
     try {
+      const sentinelPid = path.join(tmpDir, 'child.pid');
       const mockBin = path.join(tmpDir, 'mock-sleep.sh');
-      fs.writeFileSync(mockBin, '#!/bin/bash\nsleep 30\n', { mode: 0o755 });
+      fs.writeFileSync(mockBin, `#!/bin/bash\necho $$ > "${sentinelPid}"\nexec sleep 30\n`, { mode: 0o755 });
 
       const res = buildCommand({
-        prompt: 'test sigterm',
+        prompt: 'test sigterm process group',
         mode: 'executor',
         provider: 'vertex',
         primaryProject: 'p1',
@@ -661,23 +662,47 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
       const parsed = JSON.parse(res.content[0].text);
 
       const runScript = path.join(tmpDir, 'run.sh');
-      fs.writeFileSync(runScript, '#!/bin/bash\n' + parsed.command + '\n', { mode: 0o755 });
+      fs.writeFileSync(runScript, '#!/bin/bash\nset -m\n' + parsed.command + '\n', { mode: 0o755 });
 
-      const script = `
-        "${runScript}" >/dev/null 2>&1 &
-        PID=$!
-        sleep 0.2
-        kill -TERM $PID 2>/dev/null || true
-        wait $PID
-        echo "EXIT_CODE=$?"
-      `;
-      const out = execSync(script, {
-        shell: '/bin/bash',
+      const child = spawn('/bin/bash', [runScript], {
         env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).toString();
+        stdio: 'ignore',
+      });
 
-      assert.ok(out.includes('EXIT_CODE=143'), `Expected exit code 143 on SIGTERM, got: ${out.trim()}`);
+      const start = Date.now();
+      while (!fs.existsSync(sentinelPid) && Date.now() - start < 5000) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      assert.ok(fs.existsSync(sentinelPid), 'Mock child PID sentinel must be created');
+      const childPid = fs.readFileSync(sentinelPid, 'utf8').trim();
+      assert.ok(childPid.length > 0, 'Child PID must be non-empty');
+      assert.ok(fs.existsSync(`/proc/${childPid}`), 'Child process must be running before SIGTERM');
+
+      child.kill('SIGTERM');
+
+      const exitCode = await new Promise((resolve) => {
+        child.on('exit', (code, signal) => resolve(code !== null ? code : (signal === 'SIGTERM' ? 143 : signal)));
+      });
+
+      assert.equal(exitCode, 143, `Expected exit code 143 on SIGTERM, got: ${exitCode}`);
+
+      const killStart = Date.now();
+      while (fs.existsSync(`/proc/${childPid}`) && Date.now() - killStart < 1000) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+
+      const childStillAlive = fs.existsSync(`/proc/${childPid}`);
+      if (childStillAlive) {
+        try { process.kill(parseInt(childPid, 10), 'SIGKILL'); } catch {}
+      }
+      assert.equal(childStillAlive, false, `Child process PID ${childPid} must not leak in /proc`);
+
+      const uid = process.getuid ? process.getuid() : 0;
+      const markerDir = path.join(tmpDir, `claude-cli-${uid}`);
+      if (fs.existsSync(markerDir)) {
+        const remaining = fs.readdirSync(markerDir).filter((f) => f.startsWith('p.') || f.startsWith('sp.') || f.startsWith('err.') || f.startsWith('out.'));
+        assert.equal(remaining.length, 0, `Expected 0 temp files in ${markerDir}, found: ${remaining.join(', ')}`);
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1033,13 +1058,22 @@ exit 0
 describe('Darwin Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T-P6-7, T-P6-9)', () => {
   it('redacts multi-line PEM blocks without swallowing subsequent lines (C7-7)', () => {
     assert.ok(!REDACT_SED.includes('/c\\\\'), 'REDACT_SED must not use non-portable c\\ sed command');
-    assert.ok(REDACT_SED.includes('/-----BEGIN/!d'), 'REDACT_SED must use portable /-----BEGIN/!d sed pattern');
+    assert.ok(REDACT_SED.includes('/^[A-Za-z0-9+\\/=]{16,}/d'), 'REDACT_SED must use non-swallowing base64 deletion pattern');
 
     const input = 'Header info\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----\nImportant trailing log line\n';
     const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
     assert.ok(out.includes('[REDACTED_PEM]'), 'PEM block must be redacted');
     assert.ok(out.includes('Important trailing log line'), 'Trailing lines after PEM must be preserved');
     assert.ok(!out.includes('MIIEowIBAAKCAQEA0'), 'Private key body must not appear');
+  });
+
+  it('unterminated PEM block does not swallow subsequent stderr log lines to EOF (C8-5 / T-5)', () => {
+    const input = 'Header info\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\nMore base64 key line\nCritical following error message: connection refused to 10.0.0.1\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(out.includes('[REDACTED_PEM]'), 'PEM marker must be redacted as [REDACTED_PEM]');
+    assert.ok(out.includes('Critical following error message: connection refused to 10.0.0.1'), 'Subsequent error message must NOT be swallowed to EOF');
+    assert.ok(!out.includes('MIIEowIBAAKCAQEA0'), 'Base64 key body must be removed');
+    assert.ok(!out.includes('More base64 key line'), 'Base64 key body lines must be removed');
   });
 
   it('redacts Authorization: token and custom scheme headers (C7-8)', () => {
@@ -1124,6 +1158,288 @@ describe('Darwin Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T
       assert.ok(fs.statSync(expectedSubdir).isDirectory(), 'Created path must be a directory');
     } finally {
       fs.rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts tokens with prefixes longer than 24 characters (C8-3 / T-2)', () => {
+    const input = 'KUBERNETES_SERVICE_ACCOUNT_TOKEN=eyJhbGciOiJSUzI1NiIsImtpZCI6InByb2QtY2EtMSJ9.ey\n' +
+      'OPENSHIFT_SERVICEACCOUNT_TOKEN=sha256~abcdef1234567890abcdef1234567890\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('eyJhbGciOiJSUzI1NiIsImtpZCI6InByb2QtY2EtMSJ9'), 'Kubernetes SA token must be redacted');
+    assert.ok(!out.includes('sha256~abcdef1234567890abcdef1234567890'), 'OpenShift SA token must be redacted');
+    assert.ok(out.includes('KUBERNETES_SERVICE_ACCOUNT_TOKEN=[REDACTED]'), 'K8s token prefix preserved with [REDACTED]');
+    assert.ok(out.includes('OPENSHIFT_SERVICEACCOUNT_TOKEN=[REDACTED]'), 'OpenShift token prefix preserved with [REDACTED]');
+  });
+
+  it('redacts JSON quoted and escaped Authorization headers (C8-4 / T-3)', () => {
+    const input = '{"Authorization": "Bearer secret-token-xyz"}\n{\\"Authorization\\": \\"Bearer secret-token-xyz\\"}\n{"Authorization": "secret-raw-token"}\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('secret-token-xyz'), 'Quoted Authorization bearer token must be redacted');
+    assert.ok(!out.includes('secret-raw-token'), 'Quoted raw Authorization token must be redacted');
+    assert.ok(out.includes('[REDACTED]'), 'Must replace with [REDACTED]');
+  });
+
+  it('redacts Digest authentication response hashes (C8-4 / T-4)', () => {
+    const input = 'Digest username="user", response="abcdef1234567890", nonce="xyz"\n' +
+      'Digest response=\'abcdef1234567890\'\n' +
+      'response=abcdef1234567890\n';
+    const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });
+    assert.ok(!out.includes('abcdef1234567890'), 'Digest response hash must be redacted');
+    assert.ok(out.includes('response=[REDACTED]'), 'Digest response key preserved with [REDACTED]');
+  });
+});
+
+describe('Darwin Remediation - C8-2: Preserve Partial stdout on Terminal Failure & User Veto (T-7)', () => {
+  it('emits partial stdout before exit code on terminal cascade failure (C8-2 / T-7)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-stdout-term-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "Partial response before crash"\necho "Fatal terminal error" >&2\nexit 1\n', { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test partial stdout terminal',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      let stdout = '';
+      try {
+        stdout = execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).toString();
+      } catch (err) {
+        stdout = err.stdout ? err.stdout.toString() : '';
+      }
+
+      assert.ok(
+        stdout.includes('Partial response before crash'),
+        `Expected partial stdout to be preserved on terminal failure, got stdout: "${stdout}"`
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits partial stdout before exit on 401/403 user error veto (C8-2 / T-7)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-stdout-veto-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "Partial reasoning before auth failure"\necho "HTTP 401 Unauthorized" >&2\nexit 1\n', { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test partial stdout veto',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      let stdout = '';
+      try {
+        stdout = execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).toString();
+      } catch (err) {
+        stdout = err.stdout ? err.stdout.toString() : '';
+      }
+
+      assert.ok(
+        stdout.includes('Partial reasoning before auth failure'),
+        `Expected partial stdout to be preserved on user veto, got stdout: "${stdout}"`
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Darwin Pass 8 Remediation: Mutation Killers (C8-7)', () => {
+  it('enforces umask 077 in failover script prologue (C8-7)', () => {
+    const res = buildCommand({
+      prompt: 'test umask',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    });
+    const parsed = JSON.parse(res.content[0].text);
+    assert.ok(parsed.command.includes('umask 077'), 'Failover script must enforce umask 077');
+  });
+
+  it('rejects candidate dir if it is a symlink and falls back to safe mktemp directory (C8-7 / T-8 security)', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-symlink-test-'));
+    const foreignDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-foreign-target-'));
+    try {
+      const uid = process.getuid ? process.getuid() : 0;
+      const candSymlink = path.join(baseDir, `claude-cli-${uid}`);
+      fs.symlinkSync(foreignDir, candSymlink);
+
+      const mockBin = path.join(baseDir, 'mock.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "OK"\nexit 0\n', { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test symlink rejection',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      assert.ok(parsed.command.includes('[ ! -L "$_cand" ]'), 'Script must check that candidate dir is not a symlink');
+      assert.ok(parsed.command.includes('[ -O "$_cand" ]'), 'Script must check that candidate dir is owned by current user');
+
+      execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, XDG_RUNTIME_DIR: baseDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+
+      const foreignFiles = fs.readdirSync(foreignDir);
+      assert.equal(foreignFiles.length, 0, `Symlinked target dir must not be written to; found: ${foreignFiles.join(', ')}`);
+    } finally {
+      fs.rmSync(baseDir, { recursive: true, force: true });
+      fs.rmSync(foreignDir, { recursive: true, force: true });
+    }
+  });
+
+  it('vetoes failover on user error (401/403) even when stderr contains transient error keywords (C8-7)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-veto-precedence-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock.sh');
+      const callCountFile = path.join(tmpDir, 'call_count');
+      fs.writeFileSync(callCountFile, '0');
+      fs.writeFileSync(mockBin, `#!/bin/bash
+COUNT=$(cat "${callCountFile}")
+COUNT=$((COUNT + 1))
+echo "$COUNT" > "${callCountFile}"
+if [ "$COUNT" -eq 1 ]; then
+  echo "HTTP 401 Unauthorized: token expired (service rate limit remaining: 100)" >&2
+  exit 1
+else
+  echo "TIER_2_CALLED" >&2
+  exit 0
+fi
+`, { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test veto precedence',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      let stderr = '';
+      try {
+        execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        stderr = err.stderr ? err.stderr.toString() : '';
+      }
+
+      const totalCalls = parseInt(fs.readFileSync(callCountFile, 'utf8').trim(), 10);
+      assert.equal(totalCalls, 1, 'Tier 1 user error must veto failover immediately; Tier 2 must not be called');
+      assert.ok(!stderr.includes('TIER_2_CALLED'), 'Tier 2 must not be executed when Tier 1 fails with user error');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('redacts escaped JSON authorization, tokens, and digest responses in stderr (C8-4 / R5)', () => {
+    const inputs = [
+      '\\"Authorization\\": \\"Bearer secret_token_abc\\"',
+      '\\"token\\": \\"secret_bearer_xyz\\"',
+      'response=\\"secret_digest_val\\"',
+      '\\"password\\": \\"super_secret_val\\"',
+    ];
+    for (const inp of inputs) {
+      const out = execSync(REDACT_SED, { input: inp }).toString().trim();
+      assert.ok(!out.includes('secret_'), `Secret must be redacted from: ${inp}, got: ${out}`);
+      assert.ok(out.includes('[REDACTED]'), `Must contain [REDACTED], got: ${out}`);
+    }
+  });
+
+  it('redacts partial stdout on terminal failure before flushing (C8-2 / C6)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-stdout-redact-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock.sh');
+      fs.writeFileSync(mockBin, `#!/bin/bash
+echo "Partial output with Authorization: Bearer secret_in_stdout"
+echo "HTTP 401 Unauthorized" >&2
+exit 1
+`, { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test stdout redaction',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      let stdout = '';
+      try {
+        stdout = execSync('bash', {
+          input: parsed.command,
+          env: { ...process.env, XDG_RUNTIME_DIR: tmpDir },
+          stdio: ['pipe', 'pipe', 'pipe'],
+        }).toString();
+      } catch (err) {
+        stdout = err.stdout ? err.stdout.toString() : '';
+      }
+
+      assert.ok(!stdout.includes('secret_in_stdout'), 'Secrets in partial stdout must be redacted');
+      assert.ok(stdout.includes('Partial output with Authorization: Bearer [REDACTED]'), 'Partial output must be flushed and redacted');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resiliently falls back to cat in failover _redact under set -eo pipefail (R1 / R5)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-redact-resilience-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock.sh');
+      fs.writeFileSync(mockBin, `#!/bin/bash
+echo "All good output"
+exit 0
+`, { mode: 0o755 });
+
+      const res = buildCommand({
+        prompt: 'test redact resilience',
+        mode: 'executor',
+        provider: 'vertex',
+        primaryProject: 'p1',
+        secondaryProject: 'p2',
+      }, { CLAUDE_BIN: mockBin });
+
+      const parsed = JSON.parse(res.content[0].text);
+      const brokenSedDir = path.join(tmpDir, 'broken-bin');
+      fs.mkdirSync(brokenSedDir);
+      fs.writeFileSync(path.join(brokenSedDir, 'sed'), '#!/bin/bash\nexit 1\n', { mode: 0o755 });
+
+      const out = execSync('bash', {
+        input: parsed.command,
+        env: { ...process.env, PATH: `${brokenSedDir}:${process.env.PATH}`, XDG_RUNTIME_DIR: tmpDir },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).toString();
+
+      assert.ok(out.includes('All good output'), 'Script must succeed even if sed binary fails in _redact');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });

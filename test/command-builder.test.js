@@ -199,6 +199,15 @@ describe('buildCommand - command construction', () => {
     assert.equal(parsed.cwd, null);
     assert.ok(!parsed.command.match(/^cd /m));
   });
+
+  it('T-6: non-failover command wraps REDACT_SED in resilient pipe fallback { ${REDACT_SED} || cat; } >&2 (C8-6)', () => {
+    const result = buildCommand({ prompt: 'test pipe fallback' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(
+      parsed.command.includes('{ sed -E -u ') && parsed.command.includes('|| cat; } >&2'),
+      'Non-failover command must route stderr through { REDACT_SED || cat; } >&2'
+    );
+  });
 });
 
 // === D. Heredoc delimiter ===

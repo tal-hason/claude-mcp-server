@@ -69,7 +69,7 @@ CallMcpTool: user-claude-cli / claude_models
 
 Parameters:
 - `provider`: `"all"` (default), `"enmaas"`, or `"vertex"`
-- `project`: Optional GCP project ID to query specific Vertex AI quotas/models
+- `project`: Optional GCP project ID to query specific Vertex AI quotas/models. Auto-detects from `VERTEX_PROJECT_ID`, `ANTHROPIC_VERTEX_PROJECT_ID`, or `CLOUDSDK_CORE_PROJECT` environment variables if omitted; explicit `project` parameter takes precedence.
 
 Returns real-time models for EnMaaS (e.g. `rits/zai-org/glm-5-3`, `rits/deepseek-ai/DeepSeek-V4.1-Flash-1017`) and supported Claude aliases (`sonnet`, `opus`, `haiku`) per Vertex AI project.
 
