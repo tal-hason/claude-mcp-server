@@ -64,8 +64,12 @@ Two tools:
 
 ```
 CallMcpTool: user-claude-cli / claude_models
-{ "provider": "all" }
+{ "provider": "all", "project": "my-vertex-project" }
 ```
+
+Parameters:
+- `provider`: `"all"` (default), `"enmaas"`, or `"vertex"`
+- `project`: Optional GCP project ID to query specific Vertex AI quotas/models. Auto-detects from `VERTEX_PROJECT_ID`, `ANTHROPIC_VERTEX_PROJECT_ID`, or `CLOUDSDK_CORE_PROJECT` environment variables if omitted; explicit `project` parameter takes precedence.
 
 Returns real-time models for EnMaaS (e.g. `rits/zai-org/glm-5-3`, `rits/deepseek-ai/DeepSeek-V4.1-Flash-1017`) and supported Claude aliases (`sonnet`, `opus`, `haiku`) per Vertex AI project.
 
@@ -82,7 +86,7 @@ Parse the response JSON, then execute the `command` field via the Shell tool.
 
 ```
 CallMcpTool: user-claude-cli / claude_prompt
-{ "prompt": "<full review prompt>", "mode": "reviewer", "model": "claude-opus-4-8" }
+{ "prompt": "<full review prompt>", "mode": "reviewer", "model": "claude-opus-5-5" }
 ```
 
 Execute the returned command with `block_until_ms: 0` to background it. Read the terminal file when done.
@@ -99,20 +103,37 @@ Execute the returned command with `block_until_ms: 0` to background it. Read the
 
 Without `mode`, the tool builds a raw command (caller controls everything).
 
+### Failover & Resilience
+
+Built-in multi-tier failover ensures uninterrupted execution across cloud and gateway outages:
+
+- **Failover Triggers**:
+  - Quota exhaustion: HTTP 429, `RESOURCE_EXHAUSTED`, Rate limit, credit balance, budget exceeded.
+  - Gateway & Infra errors: HTTP 500, 502, 503, 504, 529, `ECONNRESET`, `ETIMEDOUT`, socket hang up, `UNAVAILABLE`.
+  - Process timeouts: Exit code 124 or 137 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
+- **User Error Veto**: HTTP 400, 401, 403, and `invalid_request_error` immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
+- **Shared-Quota Bypass (Cross-Provider)**: When Tier 1 (EnMaaS) exhausts shared enterprise quota (429), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
+- **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted to prevent redundant invocations against the same project quota. Note that `primaryProject` takes precedence over the legacy `project` parameter.
+- **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` (and any mode-appended prompt) is capped at 100KB to prevent argument buffer overflow and enforce clean streaming via temporary files (`E2BIG` prevention). When failover is enabled, system prompts are safely injected via temporary file redirection (`"$(< "$_spfile")"`) rather than raw command-line argument expansion.
+- **Automated Stderr Redaction**: All error logs and terminal failure outputs across both failover cascades and single-tier commands are filtered through stream-level `sed -E` redaction to strip Bearer, Basic, and Token authorization headers, API keys, JWTs, JSON cookies, and multi-line PEM blocks prior to emitting to stderr. Redaction applies strictly to stderr error logs; successful model output on stdout is buffered and delivered unmodified.
+
 ### Parameters
 
 | Param | Required | Description |
 |---|---|---|
-| `prompt` | Yes | The prompt to send |
+| `prompt` | Yes | The prompt to send (combined prompt + systemPrompt <= 100KB) |
 | `mode` | No | Dispatch mode (see table above) |
-| `model` | No | Exact model name (e.g. `claude-opus-4-8`, `rits/zai-org/glm-5-3`) |
+| `model` | No | Exact model name (e.g. `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/zai-org/glm-5-3`) |
 | `secondaryModel` | No | Fallback model name for cross-provider failover (defaults to Sonnet) |
+| `tertiaryModel` | No | Tertiary model name for 3-tier cascade fallback (defaults to Sonnet) |
 | `effort` | No | `low` / `medium` / `high` / `xhigh` / `max` |
 | `provider` | No | Inference provider: `auto` (default), `enmaas`, or `vertex` |
 | `primaryProject` | No | Primary GCP project ID for Vertex AI execution |
-| `secondaryProject` | No | Secondary GCP project ID for Vertex failover |
+| `secondaryProject` | No | Secondary GCP project ID for Vertex failover (Tier 2) |
+| `tertiaryProject` | No | Tertiary GCP project ID for 3-tier cascade failover (Tier 3) |
 | `primaryCredentials` | No | Path to primary GCP service account credentials JSON |
 | `secondaryCredentials` | No | Path to secondary GCP service account credentials JSON |
+| `tertiaryCredentials` | No | Path to tertiary GCP service account credentials JSON |
 | `systemPrompt` | No | System prompt override |
 | `sessionId` | No | Resume a previous session |
 | `cwd` | No | Working directory for Claude CLI |
@@ -123,9 +144,12 @@ Without `mode`, the tool builds a raw command (caller controls everything).
 |---|---|
 | `server.js` | MCP entry point — thin wiring, delegates to command-builder |
 | `command-builder.js` | Pure logic — shellQuote, buildCommand, mode resolution |
-| `failover.js` | Failover logic — Vertex quota retry & EnMaaS-to-Vertex subshell failover |
+| `stream-format.js` | CLI streaming output formatter — strips ANSI, parses events, formats for UI |
+| `failover.js` | Failover logic — Vertex quota retry, cross-provider, & 3-tier cascade failover |
+| `failover-scripts.js` | Shell script generation — heredoc templates, sticky markers, signal traps, and redaction |
 | `providers.js` | Provider routing & environment variables configuration |
 | `modes.js` | Dispatch mode definitions (effort + system prompt per role) |
+| `models.js` | Dynamic model discovery and capability probing (`claude_models`) |
 | `setup.sh` | From-source setup: deps + MCP registration & `--configure` CLI |
 | `install.sh` | Curl-pipeable installer: download release + register |
 
@@ -134,24 +158,30 @@ Without `mode`, the tool builds a raw command (caller controls everything).
 | Variable | Default | Purpose |
 |---|---|---|
 | `CLAUDE_BIN` | `claude` | Path to Claude CLI binary |
+| `CLAUDE_TIMEOUT` | `1800` | Per-tier execution timeout in seconds |
 | `CLAUDE_MCP_DIR` | `~/.local/share/claude-mcp-server` | Install location (install.sh only) |
 | `ENMAAS_BASE_URL` | `https://api.enmaas.example.com` | Base URL for Red Hat EnMaaS AI Gateway |
-| `ENMAAS_KEY` | (empty) | API key / token for EnMaaS authentication |
+| `ENMAAS_KEY` | (empty) | API key / token for EnMaaS authentication (recommended via shell env) |
 | `VERTEX_PRIMARY_PROJECT` | (empty) | Default primary GCP project ID |
 | `VERTEX_SECONDARY_PROJECT` | (empty) | Secondary GCP project ID for failover |
+| `VERTEX_TERTIARY_PROJECT` | (empty) | Tertiary GCP project ID for 3-tier cascade failover (alias: `VERTEX_FALLBACK_PROJECT`) |
 | `VERTEX_PRIMARY_CREDENTIALS` | (empty) | Primary GCP service account JSON credentials file |
 | `VERTEX_SECONDARY_CREDENTIALS` | (empty) | Secondary GCP service account JSON credentials file |
+| `VERTEX_TERTIARY_CREDENTIALS` | (empty) | Tertiary GCP service account JSON credentials file (alias: `VERTEX_FALLBACK_CREDENTIALS`) |
 
 ### Configuration CLI (`setup.sh --configure`)
 
-Configure or update MCP credentials and failover settings:
+Configure or update MCP credentials and failover settings. To protect sensitive credentials from process listing exposure (`ps aux`), export `ENMAAS_KEY` in your environment rather than passing it as a CLI flag:
 
 ```bash
+export ENMAAS_KEY="<your-secret-key>"
+
 ./setup.sh --configure \
   --primary-project "<PRIMARY_PROJECT_ID>" \
-  --failover-project "<SECONDARY_PROJECT_ID>" \
+  --secondary-project "<SECONDARY_PROJECT_ID>" \
+  --tertiary-project "<TERTIARY_PROJECT_ID>" \
   --primary-credentials "/path/to/primary-sa.json" \
-  --failover-credentials "/path/to/secondary-sa.json" \
-  --gateway-url "https://api.enmaas.example.com" \
-  --enmaas-key "secret-key"
+  --secondary-credentials "/path/to/secondary-sa.json" \
+  --tertiary-credentials "/path/to/tertiary-sa.json" \
+  --gateway-url "https://api.enmaas.example.com"
 ```

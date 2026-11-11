@@ -12,8 +12,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-
 import { shellQuote, buildCommand } from '../command-builder.js';
+import { createEnvScrubber } from './helpers/env.js';
+
+const scrubber = createEnvScrubber();
+beforeEach(() => scrubber.scrub());
+afterEach(() => scrubber.restore());
 
 // Dynamic loader for providers.js to allow running tests in Red-First ATDD
 async function getProviders() {
@@ -85,7 +89,7 @@ describe('buildCommand - mode resolution', () => {
   });
 
   it('explorer mode sets effort to low', () => {
-    const result = buildCommand({ prompt: 'test', mode: 'explorer' });
+    const result = buildCommand({ prompt: 'test', mode: 'explorer', model: 'claude-3-5-sonnet' });
     const parsed = JSON.parse(result.content[0].text);
     assert.ok(parsed.command.includes("--effort 'low'"));
   });
@@ -194,6 +198,15 @@ describe('buildCommand - command construction', () => {
     const parsed = JSON.parse(result.content[0].text);
     assert.equal(parsed.cwd, null);
     assert.ok(!parsed.command.match(/^cd /m));
+  });
+
+  it('T-6: non-failover command wraps REDACT_SED in resilient pipe fallback { ${REDACT_SED} || cat; } >&2 (C8-6)', () => {
+    const result = buildCommand({ prompt: 'test pipe fallback' });
+    const parsed = JSON.parse(result.content[0].text);
+    assert.ok(
+      parsed.command.includes('{ sed -E -u ') && parsed.command.includes('|| cat; } >&2'),
+      'Non-failover command must route stderr through { REDACT_SED || cat; } >&2'
+    );
   });
 });
 
@@ -558,7 +571,7 @@ describe('buildCommand - EnMaaS gateway routing and effort suppression', () => {
 
 describe('buildCommand & providers.js - Vertex multi-project budget failover', () => {
   it('T-19: resolveVertexFailoverConfig returns enabled: false by default when secondary project omitted', async () => {
-    const { resolveVertexFailoverConfig } = await getProviders();
+    const { resolveVertexFailoverConfig } = await getFailover();
     const config = resolveVertexFailoverConfig({ prompt: 'test' });
     assert.equal(config.enabled, false);
     const result = buildCommand({ prompt: 'test' });
@@ -572,7 +585,7 @@ describe('buildCommand & providers.js - Vertex multi-project budget failover', (
     assert.ok(parsed.command.includes('_run_claude'), 'Command should define _run_claude function');
     assert.ok(parsed.command.includes('ANTHROPIC_VERTEX_PROJECT_ID'), 'Command should export ANTHROPIC_VERTEX_PROJECT_ID');
     assert.ok(
-      parsed.command.includes('RESOURCE_EXHAUSTED|Quota exceeded|429|budget|billing'),
+      parsed.command.includes('RESOURCE_EXHAUSTED') && parsed.command.includes('429'),
       'Command should check for quota/budget exhaustion error patterns'
     );
   });
@@ -773,7 +786,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
       prompt: 'test',
     });
     const parsed = JSON.parse(result.content[0].text);
-    assert.ok(parsed.command.includes('429|502|503|504'), 'Must match 429/50x');
+    assert.ok(parsed.command.includes('429') && parsed.command.includes('502|503|504'), 'Must match 429/50x');
     assert.ok(parsed.command.includes('ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT'), 'Must match network errors');
   });
 
@@ -852,5 +865,33 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
 
     const execResult = execSync('bash', { input: commandStr, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
     assert.ok(execResult.includes('SECONDARY_SUCCESS'), 'Secondary should execute successfully when primary fails');
+  });
+
+  it('T-37: Non-failover command redirects stderr through REDACT_SED (C7-11 / T-P6-5)', () => {
+    const res = buildCommand({ prompt: 'test non-failover redaction' });
+    const parsed = JSON.parse(res.content[0].text);
+    const cmd = parsed.command;
+    assert.ok(cmd.includes('2>&1 1>&3'), 'Command must redirect stderr for redaction');
+    assert.ok(cmd.includes('3>&1'), 'Command must restore stdout descriptor');
+    assert.ok(cmd.includes('sed -E'), 'Command must pipe stderr through sed');
+  });
+
+  it('T-38: Non-failover command redacts bearer tokens emitted to stderr during runtime execution (C7-11 / T-P6-5)', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-non-failover-'));
+    try {
+      const mockBin = path.join(tmpDir, 'mock-claude.sh');
+      fs.writeFileSync(mockBin, '#!/bin/bash\necho "Authorization: Bearer super-secret-token" >&2\necho "NORMAL_OUTPUT"\nexit 0\n', { mode: 0o755 });
+      const res = buildCommand({ prompt: 'test stderr leak' }, { CLAUDE_BIN: mockBin });
+      const parsed = JSON.parse(res.content[0].text);
+      const wrapperScript = `
+        OUT=$(${parsed.command} 2>"${tmpDir}/err.log")
+        cat "${tmpDir}/err.log"
+      `;
+      const capturedStderr = execSync(wrapperScript, { shell: '/bin/bash', stdio: ['pipe', 'pipe', 'pipe'] }).toString();
+      assert.ok(!capturedStderr.includes('super-secret-token'), 'Bearer token on stderr must be redacted');
+      assert.ok(capturedStderr.includes('[REDACTED]'), 'Must contain [REDACTED]');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
