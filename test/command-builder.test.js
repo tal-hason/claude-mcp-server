@@ -416,15 +416,20 @@ describe('buildCommand - POSIX timing', () => {
 
 // === J. providers.js - resolveProvider (T-1, T-2, T-3, T-10, T-11) ===
 
-describe('providers.js - resolveProvider', () => {
-  it('T-1: resolveProvider auto-detection: Claude models default to Vertex', async () => {
+describe('providers.js - resolveProvider, normalizeVertexModel & buildVertexSettings', () => {
+  it('T-1: resolveProvider auto-detection: Claude models default to Vertex even when ENMAAS_KEY is set', async () => {
     const { resolveProvider } = await getProviders();
     assert.equal(resolveProvider('auto', 'claude-sonnet-4-6'), 'vertex');
+    assert.equal(resolveProvider('auto', 'sonnet', { ENMAAS_KEY: 'test-key' }), 'vertex');
+    assert.equal(resolveProvider('auto', 'opus', { ENMAAS_KEY: 'test-key' }), 'vertex');
+    assert.equal(resolveProvider('auto', 'claude-opus-5-5', { ENMAAS_KEY: 'test-key' }), 'vertex');
+    assert.equal(resolveProvider('auto', 'claude-sonnet-5-5', { ENMAAS_KEY: 'test-key' }), 'vertex');
   });
 
   it('T-2: resolveProvider auto-detection: RITS / EnMaaS models route to EnMaaS', async () => {
     const { resolveProvider } = await getProviders();
     assert.equal(resolveProvider('auto', 'rits/zai-org/glm-5-3'), 'enmaas');
+    assert.equal(resolveProvider('auto', 'enmaas-custom-model'), 'enmaas');
   });
 
   it('T-3: resolveProvider explicit override: EnMaaS provider forced', async () => {
@@ -440,6 +445,31 @@ describe('providers.js - resolveProvider', () => {
   it('T-11: resolveProvider auto-detection handles undefined inputs safely', async () => {
     const { resolveProvider } = await getProviders();
     assert.equal(resolveProvider(undefined, undefined), 'vertex');
+  });
+
+  it('T-3b: normalizeVertexModel maps legacy 5-5, opus-5, and rits/* IDs to canonical Vertex aliases', async () => {
+    const { normalizeVertexModel } = await getProviders();
+    assert.equal(typeof normalizeVertexModel, 'function', 'normalizeVertexModel must be exported from providers.js');
+    assert.equal(normalizeVertexModel('claude-opus-5-5'), 'opus');
+    assert.equal(normalizeVertexModel('claude-opus-5'), 'opus');
+    assert.equal(normalizeVertexModel('claude-sonnet-5-5'), 'sonnet');
+    assert.equal(normalizeVertexModel('rits/zai-org/glm-5-3'), 'sonnet');
+    assert.equal(normalizeVertexModel('sonnet'), 'sonnet');
+    assert.equal(normalizeVertexModel('opus'), 'opus');
+  });
+
+  it('T-4a: buildVertexSettings builds --settings env override object for Vertex tiers', async () => {
+    const { buildVertexSettings } = await getProviders();
+    assert.equal(typeof buildVertexSettings, 'function', 'buildVertexSettings must be exported from providers.js');
+    assert.equal(buildVertexSettings(null, null), null);
+    assert.deepEqual(buildVertexSettings('vertex-project-1', '/creds/sa1.json'), {
+      env: {
+        CLAUDE_CODE_USE_VERTEX: '1',
+        ANTHROPIC_VERTEX_PROJECT_ID: 'vertex-project-1',
+        CLOUDSDK_CORE_PROJECT: 'vertex-project-1',
+        GOOGLE_APPLICATION_CREDENTIALS: '/creds/sa1.json',
+      },
+    });
   });
 });
 
@@ -698,28 +728,28 @@ describe('Bash syntax validation and setup.sh --configure CLI verification', () 
 describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
   it('T-24: resolveFailoverConfig detects cross-provider failover when provider: "enmaas" and secondary project is provided', async () => {
     const { resolveFailoverConfig } = await getFailover();
-    const config = resolveFailoverConfig('enmaas', { secondaryProject: 'cnv-ai-insights' }, {});
+    const config = resolveFailoverConfig('enmaas', { secondaryProject: 'vertex-project-2' }, {});
     assert.equal(config.enabled, true, 'Failover must be enabled');
     assert.equal(config.type, 'cross-provider', 'Failover type must be cross-provider');
-    assert.equal(config.secondaryProject, 'cnv-ai-insights');
+    assert.equal(config.secondaryProject, 'vertex-project-2');
   });
 
   it('T-24b: resolveFailoverConfig detects cross-provider failover when provider: "auto" resolves to EnMaaS and secondary Vertex project is provided', async () => {
     const { resolveFailoverConfig } = await getFailover();
-    const config = resolveFailoverConfig('auto', { model: 'rits/zai-org/glm-5-3', secondaryProject: 'cnv-ai-insights' }, {});
+    const config = resolveFailoverConfig('auto', { model: 'rits/zai-org/glm-5-3', secondaryProject: 'vertex-project-2' }, {});
     assert.equal(config.enabled, true, 'Failover must be enabled');
     assert.equal(config.type, 'cross-provider', 'Failover type must be cross-provider');
-    assert.equal(config.secondaryProject, 'cnv-ai-insights');
+    assert.equal(config.secondaryProject, 'vertex-project-2');
   });
 
   it('T-25: resolveFailoverConfig resolves secondary project and credentials from primary fallback', async () => {
     const { resolveFailoverConfig } = await getFailover();
     const configFromParams = resolveFailoverConfig('enmaas', {
-      primaryProject: 'cnv-ai-insights',
+      primaryProject: 'vertex-project-2',
       primaryCredentials: '/path/to/primary-sa.json',
     }, {});
     assert.equal(configFromParams.enabled, true, 'Failover must be enabled via primary fallback');
-    assert.equal(configFromParams.secondaryProject, 'cnv-ai-insights');
+    assert.equal(configFromParams.secondaryProject, 'vertex-project-2');
     assert.equal(configFromParams.secondaryCredentials, '/path/to/primary-sa.json');
 
     const configFromEnv = resolveFailoverConfig('enmaas', {}, {
@@ -731,10 +761,14 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
     assert.equal(configFromEnv.secondaryCredentials, '/env/sa.json');
   });
 
-  it('T-26: resolveSecondaryModel maps rits/* or / models to undefined or explicit secondaryModel', async () => {
+  it('T-26: resolveSecondaryModel maps rits/* or / models to canonical sonnet and normalizes legacy 5-5 models (T-3)', async () => {
     const { resolveSecondaryModel } = await getFailover();
-    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3'), undefined);
-    assert.equal(resolveSecondaryModel('some/model/path'), undefined);
+    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3'), 'sonnet');
+    assert.equal(resolveSecondaryModel('some/model/path'), 'sonnet');
+    assert.equal(resolveSecondaryModel('claude-opus-5-5'), 'opus');
+    assert.equal(resolveSecondaryModel('claude-opus-5'), 'opus');
+    assert.equal(resolveSecondaryModel('claude-sonnet-5-5'), 'sonnet');
+    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3', 'claude-opus-5-5'), 'opus');
     assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3', 'claude-3-5-sonnet'), 'claude-3-5-sonnet');
     assert.equal(resolveSecondaryModel('claude-3-5-sonnet-v20241022'), 'claude-3-5-sonnet-v20241022');
   });
@@ -742,7 +776,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
   it('T-27: Cross-provider failover script contains isolated _run_primary() and _run_secondary()', () => {
     const result = buildCommand({
       provider: 'enmaas',
-      secondaryProject: 'cnv-ai-insights',
+      secondaryProject: 'vertex-project-2',
       prompt: 'test',
     });
     const parsed = JSON.parse(result.content[0].text);
@@ -755,7 +789,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
   it('T-28: _run_secondary() subshell strictly unsets ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY', () => {
     const result = buildCommand({
       provider: 'enmaas',
-      secondaryProject: 'cnv-ai-insights',
+      secondaryProject: 'vertex-project-2',
       prompt: 'test secondary environment unset',
     });
     const parsed = JSON.parse(result.content[0].text);
@@ -766,23 +800,54 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
     );
   });
 
-  it('T-29: _run_secondary() invocation omits --settings flag', () => {
+  it('T-29: _run_secondary() omits EnMaaS settings and injects Vertex tier --settings overriding ANTHROPIC_VERTEX_PROJECT_ID (T-4)', () => {
     const result = buildCommand({
       provider: 'enmaas',
-      secondaryProject: 'cnv-ai-insights',
+      secondaryProject: 'vertex-project-2',
+      secondaryCredentials: '/creds/sec.json',
       prompt: 'test settings flag isolation',
     });
     const parsed = JSON.parse(result.content[0].text);
     const primaryMatch = parsed.command.match(/_run_primary\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_secondary/);
     const secondaryMatch = parsed.command.match(/_run_secondary\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
-    assert.ok(primaryMatch[1].includes('--settings'), '_run_primary must include --settings flag');
-    assert.ok(!secondaryMatch[1].includes('--settings'), '_run_secondary must strictly omit --settings flag');
+    assert.ok(primaryMatch[1].includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":""}}\''), '_run_primary must include EnMaaS --settings flag');
+    assert.ok(!secondaryMatch[1].includes('"CLAUDE_CODE_USE_VERTEX":""'), '_run_secondary must not include EnMaaS empty CLAUDE_CODE_USE_VERTEX setting');
+    assert.ok(
+      secondaryMatch[1].includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-2","CLOUDSDK_CORE_PROJECT":"vertex-project-2","GOOGLE_APPLICATION_CREDENTIALS":"/creds/sec.json"}}\''),
+      '_run_secondary must include Vertex --settings JSON overriding project and credentials'
+    );
+  });
+
+  it('T-29b: 2-tier Vertex failover injects per-tier --settings into _run_primary and _run_secondary (T-4)', () => {
+    const result = buildCommand({
+      provider: 'vertex',
+      primaryProject: 'vertex-project-1',
+      primaryCredentials: '/creds/p1.json',
+      secondaryProject: 'vertex-project-2',
+      secondaryCredentials: '/creds/p2.json',
+      prompt: 'test 2-tier vertex settings',
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    const primaryMatch = parsed.command.match(/_run_primary\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_secondary/);
+    const secondaryMatch = parsed.command.match(/_run_secondary\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
+    assert.ok(primaryMatch, 'Must contain _run_primary');
+    assert.ok(secondaryMatch, 'Must contain _run_secondary');
+    assert.ok(
+      primaryMatch[1].includes('"ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-1"') &&
+      primaryMatch[1].includes('"GOOGLE_APPLICATION_CREDENTIALS":"/creds/p1.json"'),
+      '_run_primary must include Tier 1 Vertex --settings'
+    );
+    assert.ok(
+      secondaryMatch[1].includes('"ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-2"') &&
+      secondaryMatch[1].includes('"GOOGLE_APPLICATION_CREDENTIALS":"/creds/p2.json"'),
+      '_run_secondary must include Tier 2 Vertex --settings'
+    );
   });
 
   it('T-30: Stderr pattern matcher includes POSIX character classes for 429|502|503|504|ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT', () => {
     const result = buildCommand({
       provider: 'enmaas',
-      secondaryProject: 'cnv-ai-insights',
+      secondaryProject: 'vertex-project-2',
       prompt: 'test',
     });
     const parsed = JSON.parse(result.content[0].text);
@@ -793,7 +858,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
   it('T-31: Stderr pattern matcher excludes 400/401/403', () => {
     const result = buildCommand({
       provider: 'enmaas',
-      secondaryProject: 'cnv-ai-insights',
+      secondaryProject: 'vertex-project-2',
       prompt: 'test',
     });
     const parsed = JSON.parse(result.content[0].text);
@@ -825,7 +890,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
     const result = buildCommand({
       provider: 'enmaas',
       model: 'rits/zai-org/glm-5-3',
-      secondaryProject: 'cnv-ai-insights',
+      secondaryProject: 'vertex-project-2',
       mode: 'reviewer',
       prompt: 'test effort restoration on failover',
     });
@@ -848,7 +913,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
   it('T-36: Execution test - errexit set -e failover triggers secondary on primary exit 1', () => {
     const result = buildCommand({
       provider: 'enmaas',
-      secondaryProject: 'cnv-ai-insights',
+      secondaryProject: 'vertex-project-2',
       prompt: 'test error set e',
     });
     const parsed = JSON.parse(result.content[0].text);

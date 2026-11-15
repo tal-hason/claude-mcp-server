@@ -23,9 +23,9 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 
 - `prompt` (string, required): Task prompt to execute (combined `prompt` and `systemPrompt` capped at 100KB to prevent argument buffer overflow).
 - `mode` (string, optional): `architect`, `planner`, `reviewer`, `explorer`, `executor`.
-- `model` (string, optional): Target model name (e.g. `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/zai-org/glm-5-3`).
-- `secondaryModel` (string, optional): Fallback model name for cross-provider failover (defaults to Sonnet).
-- `tertiaryModel` (string, optional): Tertiary model name for 3-tier cascade fallback (defaults to Sonnet).
+- `model` (string, optional): Target model name (e.g. `sonnet`, `opus`, `claude-sonnet-5`, `claude-opus-4-8`, `rits/zai-org/glm-5-3`).
+- `secondaryModel` (string, optional): Fallback model name for cross-provider failover (defaults to `sonnet`).
+- `tertiaryModel` (string, optional): Tertiary model name for 3-tier cascade fallback (defaults to `sonnet`).
 - `provider` (string, optional): `auto` (default), `enmaas`, or `vertex`.
 - `effort` (string, optional): `low`, `medium`, `high`, `xhigh`, `max`.
 - `primaryProject` (string, optional): Primary GCP project ID for Vertex AI.
@@ -46,21 +46,21 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 - **Process Environment & Security Boundary**:
   - `ENMAAS_KEY` must be exported in the user's shell environment or profile (e.g. `~/.bashrc`, `~/.zshrc`) so that the agent Shell tool inherits the credential during command execution.
   - **Security Warning**: Avoid passing raw tokens via CLI arguments (`--enmaas-key <secret>`) in multi-user or shared environments, as arguments are visible in process tables (`ps aux`, `/proc/$pid/cmdline`). Always prefer setting `export ENMAAS_KEY="<token>"` in the shell environment.
-- Auto-routed models: Models prefixed with `rits/` (e.g. `rits/zai-org/glm-5-3`), models containing `enmaas`, or when `provider: "enmaas"` is explicitly set. Standard Claude models (`claude-sonnet-5-5`, `claude-opus-5-5`) default to Vertex AI unless `provider: "enmaas"` is requested.
-- Effort support: Reasoning effort is supported for Claude models (`opus`, `sonnet`); suppressed as `unsupported` for third-party models (e.g. `rits/zai-org/glm-5-3`).
+- Auto-routed models: Models prefixed with `rits/` (e.g. `rits/zai-org/glm-5-3`), models containing `enmaas`, or when `provider: "enmaas"` is explicitly set. Standard Claude models (`sonnet`, `opus`, `claude-sonnet-5`, `claude-opus-4-8`) default to Vertex AI unless `provider: "enmaas"` is requested.
+- Effort support: Reasoning effort is supported for Claude models (`opus`, `sonnet`, `claude-sonnet-5`, `claude-opus-4-8`); suppressed as `unsupported` for third-party models (e.g. `rits/zai-org/glm-5-3`) and `haiku`.
 - **3-Tier Cascade Failover**: When both `secondaryProject` and `tertiaryProject` (or `VERTEX_TERTIARY_PROJECT` / `VERTEX_FALLBACK_PROJECT`) are configured:
   - **Tier 1 (EnMaaS)**: Primary inference through EnMaaS gateway.
   - **Shared-Quota Bypass (Tier 1 -> Tier 3 Jump)**: When Tier 1 exhausts shared enterprise quota (HTTP 429, `RESOURCE_EXHAUSTED`), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
-  - **Tier 2 (Vertex Secondary)**: Triggered on EnMaaS transient gateway infrastructure outages (HTTP 500, 502, 503, 504, 529, connection timeouts, socket hang up) with Sonnet fallback and clean environment sanitization (`UNSET_GW`).
-  - **Tier 3 (Vertex Tertiary)**: Triggered if Tier 2 experiences secondary quota exhaustion, budget limit, or transient failure.
-  - **User-Error Veto**: HTTP 400, 401, 403, and `invalid_request_error` unconditionally veto failover across all tiers and immediately exit with the failure status, preventing quota waste on unrecoverable authentication or request errors.
+  - **Tier 2 (Vertex Secondary)**: Triggered on EnMaaS transient gateway infrastructure outages (HTTP 500, 502, 503, 504, 529, connection timeouts, socket hang up), model authorization errors (`403 model is not authorized`), or unset `ENMAAS_KEY`, with `sonnet` fallback, clean environment sanitization (`UNSET_GW`), and per-tier `--settings` override.
+  - **Tier 3 (Vertex Tertiary)**: Triggered if Tier 2 experiences secondary quota exhaustion, budget limit, org-policy `allowedModels` violation, model deployment unavailability, or transient failure.
+  - **User-Error Veto**: Genuine client errors (HTTP 400 `invalid_request_error`, 401 `Unauthorized`, non-model 403 `Forbidden`) veto failover across all tiers and immediately exit with the failure status, preventing quota waste on unrecoverable authentication or request errors.
   - **Prompt Efficiency**: Prompts and system prompts are written once to private subshell temp files (`$_pfile`, `$_spfile`) and piped via stdin or file redirection, preventing command-line argument length (`E2BIG`) overflow.
   - **Sticky Failover**: Success on a fallback tier drops a sticky marker in `_marker_dir` (backed by `XDG_RUNTIME_DIR` or `/tmp`) to fast-path subsequent runs without repeating failed tiers. Success on Tier 1 clears fallback markers.
   - **Security Redaction**: Stderr error logs across both failover cascades and single-tier commands pipe through automated stream-level `sed -E` redaction filtering Bearer, Basic, and Token schemes in Authorization headers, private_key_id, ENMAAS_KEY, multi-line PEM certificates, sk-ant-, ya29., glpat-, gho_/ghs_, JSON cookies, and sensitive tokens before emitting to stderr. Stdout output is buffered and emitted unmodified on success.
   - **Execution Timeout**: Configured via `CLAUDE_TIMEOUT` (defaults to `1800` seconds / 30m). A tier execution exceeding this limit exits with code 124 or 137 and triggers failover to the next tier.
 
 ### Google Cloud Vertex AI
-- Default provider for standard Claude models (`claude-sonnet-5-5`, `claude-opus-5-5`).
+- Default provider for standard Claude models (`sonnet`, `opus`, `haiku`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-haiku-4-5@20251001`). Legacy `claude-opus-5-5`, `claude-opus-5`, and `claude-sonnet-5-5` IDs are automatically normalized to canonical `opus` / `sonnet`.
 - Uses Google Cloud ADC (`gcloud auth application-default login`) or `GOOGLE_APPLICATION_CREDENTIALS`.
 - Automatic failover: When `secondaryProject` (or `VERTEX_SECONDARY_PROJECT`) is configured, primary project quota exhaustion (`RESOURCE_EXHAUSTED`, `429`, billing limits) triggers automated failover retry on the secondary project. When `tertiaryProject` is also configured, secondary exhaustion cascades to the tertiary project.
 

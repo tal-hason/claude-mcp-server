@@ -5,13 +5,12 @@ import fs from 'node:fs';
 import { supportsEffort, resolveGcpProjects } from './providers.js';
 
 export const VERTEX_MODELS = [
-  { id: 'sonnet', name: 'Claude Sonnet (canonical alias / Sonnet 5)', effort: true, role: 'architect, reviewer, general' },
-  { id: 'opus', name: 'Claude Opus (canonical alias / Opus 5)', effort: true, role: 'deep complex reasoning' },
+  { id: 'sonnet', name: 'Claude Sonnet (canonical alias / Sonnet 5)', effort: true, role: 'architect, planner, executor, general' },
+  { id: 'opus', name: 'Claude Opus (canonical alias / Opus 4.8)', effort: true, role: 'reviewer, deep complex reasoning' },
   { id: 'haiku', name: 'Claude Haiku (canonical alias / Haiku 4.5)', effort: false, role: 'fast explorer, triage' },
-  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', effort: true, role: 'architect, reviewer' },
-  { id: 'claude-opus-5', name: 'Claude Opus 5', effort: true, role: 'deep reasoning' },
-  { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', effort: true, role: 'architect, reviewer, general' },
-  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', effort: true, role: 'deep complex reasoning' },
+  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5', effort: true, role: 'architect, planner, executor' },
+  { id: 'claude-opus-4-8', name: 'Claude Opus 4.8', effort: true, role: 'reviewer, deep reasoning' },
+  { id: 'claude-haiku-4-5@20251001', name: 'Claude Haiku 4.5', effort: false, role: 'fast triage' },
 ];
 
 export async function fetchEnmaasModels(options = {}) {
@@ -27,10 +26,6 @@ export async function fetchEnmaasModels(options = {}) {
     if (!res.ok) return { provider: 'enmaas', status: 'error', error: `HTTP ${res.status}: ${res.statusText}`, models: [] };
     const data = await res.json();
     const staticGateways = [
-      { id: 'claude-sonnet-5-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'frontier' },
-      { id: 'claude-opus-5-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'frontier' },
-      { id: 'claude-sonnet-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'standard' },
-      { id: 'claude-opus-5', owner: 'anthropic', supportsEffort: true, claudeCompatible: true, provider: 'enmaas', tier: 'frontier' },
       { id: 'rits/zai-org/glm-5-3', owner: 'curvebender', supportsEffort: false, claudeCompatible: true, provider: 'enmaas', tier: 'free', cost: 'free' },
     ];
     const fetched = (data.data || []).map((m) => {

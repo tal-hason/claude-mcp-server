@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { MODES, MODE_NAMES, getModeDefaultModel } from './modes.js';
-import { resolveProvider, buildProviderEnv, supportsEffort } from './providers.js';
+import { resolveProvider, buildProviderEnv, supportsEffort, normalizeVertexModel, buildVertexSettings } from './providers.js';
 import { resolveFailoverConfig, resolveSecondaryModel, buildFailoverScript } from './failover.js';
 import { REDACT_SED } from './failover-scripts.js';
 
@@ -26,14 +26,15 @@ export function buildCommand(params, env = process.env) {
     return { content: [{ type: 'text', text: 'Error: prompt exceeds 100KB.' }], isError: true };
   }
 
-  const resolvedModel = params.model || getModeDefaultModel(params.mode, env, params.provider);
+  const rawModel = params.model || getModeDefaultModel(params.mode, env, params.provider);
+  const provider = resolveProvider(params.provider, rawModel, env);
+  const resolvedModel = provider === 'vertex' ? normalizeVertexModel(rawModel) : rawModel;
   const model = resolvedModel || 'default';
   const effort = params.effort || modeConfig?.effort;
   const mode = params.mode || 'prompt';
-  const provider = resolveProvider(params.provider, resolvedModel, env);
   const { envVars = [], settings = null } = buildProviderEnv(provider, resolvedModel) || {};
 
-  const failoverConfig = resolveFailoverConfig(provider, params, env);
+  const failoverConfig = resolveFailoverConfig(provider, { ...params, model: resolvedModel }, env);
   const isFailover = Boolean(failoverConfig?.enabled);
 
   const bin = env.CLAUDE_BIN || 'claude', shared = [];
@@ -51,15 +52,16 @@ export function buildCommand(params, env = process.env) {
   };
 
   const pEffort = supportsEffort(resolvedModel) ? effort : null;
-  const primaryArgs = makeTierArgs(resolvedModel, pEffort, settings);
+  const pSettings = provider === 'enmaas' ? settings : buildVertexSettings(failoverConfig?.primaryProject, failoverConfig?.primaryCredentials);
+  const primaryArgs = makeTierArgs(resolvedModel, pEffort, pSettings);
 
-  const secModel = resolveSecondaryModel(resolvedModel, params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
+  const secModel = resolveSecondaryModel(resolvedModel, params.secondaryModel);
   const secEffort = supportsEffort(secModel || 'sonnet') ? effort : null;
-  const secondaryArgs = makeTierArgs(secModel, secEffort);
+  const secondaryArgs = makeTierArgs(secModel, secEffort, buildVertexSettings(failoverConfig?.secondaryProject, failoverConfig?.secondaryCredentials));
 
-  const tertModel = resolveSecondaryModel(resolvedModel, params.tertiaryModel || params.secondaryModel) || (failoverConfig?.type === 'cross-provider' ? 'sonnet' : undefined);
+  const tertModel = resolveSecondaryModel(resolvedModel, params.tertiaryModel || params.secondaryModel);
   const tertEffort = supportsEffort(tertModel || 'sonnet') ? effort : null;
-  const tertiaryArgs = makeTierArgs(tertModel, tertEffort);
+  const tertiaryArgs = makeTierArgs(tertModel, tertEffort, buildVertexSettings(failoverConfig?.tertiaryProject, failoverConfig?.tertiaryCredentials));
 
   let delim = '__PROMPT_' + randomUUID().replace(/-/g, '') + '__';
   while ((params.prompt && params.prompt.includes(delim)) || (params.systemPrompt && params.systemPrompt.includes(delim))) {
@@ -76,7 +78,7 @@ export function buildCommand(params, env = process.env) {
   if (failoverConfig?.enabled) {
     commandLines.push(buildFailoverScript({
       failoverConfig, envPrefix, primaryArgs, secondaryArgs, tertiaryArgs, delim,
-      prompt: params.prompt, sysPrompt: params.systemPrompt, fmt, ...failoverConfig,
+      model: resolvedModel, prompt: params.prompt, sysPrompt: params.systemPrompt, fmt, ...failoverConfig,
     }));
   } else {
     commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | { ${REDACT_SED} || cat; } >&2; } 3>&1 | node ${fmt}; }`, params.prompt, delim);

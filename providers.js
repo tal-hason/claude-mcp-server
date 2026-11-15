@@ -28,11 +28,25 @@ export function resolveGcpProjects(params = {}, env = process.env) {
   };
 }
 
-export function resolveProvider(provider = 'auto', model = '', env = process.env) {
+export function resolveProvider(provider = 'auto', model = '', _env = process.env) {
   if (provider && provider !== 'auto') return provider;
   const m = typeof model === 'string' ? model.toLowerCase() : '';
-  const matchEnmaas = m.startsWith('rits/') || m.includes('enmaas') || (Boolean(env?.ENMAAS_KEY) && (m.includes('claude-opus-5-5') || m.includes('claude-sonnet-5-5')));
-  return matchEnmaas ? 'enmaas' : 'vertex';
+  return (m.startsWith('rits/') || m.includes('enmaas')) ? 'enmaas' : 'vertex';
+}
+
+export function normalizeVertexModel(model) {
+  if (!model || typeof model !== 'string') return model;
+  if (model === 'claude-opus-5-5' || model === 'claude-opus-5') return 'opus';
+  if (model === 'claude-sonnet-5-5' || model.startsWith('rits/') || model.includes('/')) return 'sonnet';
+  return model;
+}
+
+export function buildVertexSettings(project, creds) {
+  if (!project && !creds) return null;
+  const env = { CLAUDE_CODE_USE_VERTEX: '1' };
+  if (project) { env.ANTHROPIC_VERTEX_PROJECT_ID = project; env.CLOUDSDK_CORE_PROJECT = project; }
+  if (creds) env.GOOGLE_APPLICATION_CREDENTIALS = creds;
+  return { env };
 }
 
 export function supportsEffort(model = '') {

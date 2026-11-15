@@ -6,7 +6,7 @@
 
 export const MODES = {
   architect: {
-    defaultModel: 'claude-sonnet-5-5',
+    defaultModel: 'sonnet',
     effort: 'high',
     appendSystemPrompt: [
       'You are consulting as a senior systems architect.',
@@ -17,7 +17,7 @@ export const MODES = {
   },
 
   planner: {
-    defaultModel: 'claude-sonnet-5-5',
+    defaultModel: 'sonnet',
     effort: 'high',
     appendSystemPrompt: [
       'You are creating or evaluating an implementation plan.',
@@ -27,7 +27,7 @@ export const MODES = {
   },
 
   reviewer: {
-    defaultModel: 'claude-opus-5-5',
+    defaultModel: 'opus',
     effort: 'max',
     appendSystemPrompt: [
       'You are a principal code reviewer.',
@@ -48,7 +48,7 @@ export const MODES = {
   },
 
   executor: {
-    defaultModel: 'claude-sonnet-5-5',
+    defaultModel: 'sonnet',
     effort: 'high',
     appendSystemPrompt: [
       'You are implementing code changes.',
@@ -62,7 +62,7 @@ export const MODE_NAMES = Object.keys(MODES);
 
 export function getModeDefaultModel(mode, env = process.env, provider = null) {
   if (mode === 'explorer' && (provider === 'vertex' || !env?.ENMAAS_KEY)) {
-    return 'claude-sonnet-5-5';
+    return 'sonnet';
   }
   return MODES[mode]?.defaultModel;
 }
