@@ -74,6 +74,13 @@ for await (const line of rl) {
     }
 
     if (obj.type === 'result') {
+      if (obj.is_error && obj.result) { ensureNewline(); write(`${obj.result}\n`); }
+      continue;
+    }
+
+    if (obj.type === 'error') {
+      const msg = obj.error?.message || obj.message || JSON.stringify(obj);
+      ensureNewline(); write(`API Error: ${msg}\n`);
       continue;
     }
   } catch {

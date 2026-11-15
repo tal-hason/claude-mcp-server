@@ -32,17 +32,19 @@ test('fetchEnmaasModels - successful model discovery', async () => {
 
   assert.equal(res.provider, 'enmaas');
   assert.equal(res.status, 'available');
-  assert.ok(res.total >= 3);
+  assert.equal(res.total, 3);
   const glm = res.models.find((m) => m.id === 'rits/zai-org/glm-5-3');
   assert.ok(glm);
   assert.equal(glm.supportsEffort, false);
   assert.equal(glm.claudeCompatible, true);
+  assert.equal(glm.cost, 'free');
   const gpt = res.models.find((m) => m.id === 'gpt-5.4');
   assert.ok(gpt);
   assert.equal(gpt.claudeCompatible, false);
   const sonnet55 = res.models.find((m) => m.id === 'claude-sonnet-5-5');
-  assert.ok(sonnet55);
-  assert.equal(sonnet55.claudeCompatible, true);
+  assert.equal(sonnet55, undefined, 'Must not inject unauthorized claude-sonnet-5-5 into EnMaaS models');
+  const opus55 = res.models.find((m) => m.id === 'claude-opus-5-5');
+  assert.equal(opus55, undefined, 'Must not inject unauthorized claude-opus-5-5 into EnMaaS models');
 });
 
 test('fetchEnmaasModels - HTTP error handling', async () => {

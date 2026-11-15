@@ -86,20 +86,20 @@ Parse the response JSON, then execute the `command` field via the Shell tool.
 
 ```
 CallMcpTool: user-claude-cli / claude_prompt
-{ "prompt": "<full review prompt>", "mode": "reviewer", "model": "claude-opus-5-5" }
+{ "prompt": "<full review prompt>", "mode": "reviewer", "model": "opus" }
 ```
 
 Execute the returned command with `block_until_ms: 0` to background it. Read the terminal file when done.
 
 ### Modes
 
-| Mode | Default effort | Role |
-|---|---|---|
-| `architect` | high | Architecture analysis — boundaries, coupling, gaps |
-| `planner` | high | Plan creation — incremental steps, acceptance criteria |
-| `reviewer` | max | Code review — multi-lens, severity-graded |
-| `explorer` | low | Quick research — concise, evidence-cited |
-| `executor` | high | Implementation — hexagonal, small batches |
+| Mode | Default model | Default effort | Role |
+|---|---|---|---|
+| `architect` | `sonnet` | high | Architecture analysis — boundaries, coupling, gaps |
+| `planner` | `sonnet` | high | Plan creation — incremental steps, acceptance criteria |
+| `reviewer` | `opus` | max | Code review — multi-lens, severity-graded |
+| `explorer` | `rits/zai-org/glm-5-3` (`sonnet` on Vertex) | low | Quick research — concise, evidence-cited |
+| `executor` | `sonnet` | high | Implementation — hexagonal, small batches |
 
 Without `mode`, the tool builds a raw command (caller controls everything).
 
@@ -109,9 +109,10 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 
 - **Failover Triggers**:
   - Quota exhaustion: HTTP 429, `RESOURCE_EXHAUSTED`, Rate limit, credit balance, budget exceeded.
-  - Gateway & Infra errors: HTTP 500, 502, 503, 504, 529, `ECONNRESET`, `ETIMEDOUT`, socket hang up, `UNAVAILABLE`.
+  - Gateway, Infra & Tier Policy/Model errors: HTTP 500, 502, 503, 504, 529, `ECONNRESET`, `ETIMEDOUT`, socket hang up, `UNAVAILABLE`, Vertex org-policy `allowedModels` constraints, EnMaaS model authorization (`model is not authorized`), model deployment availability, and unset subshell `ENMAAS_KEY`.
   - Process timeouts: Exit code 124 or 137 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
-- **User Error Veto**: HTTP 400, 401, 403, and `invalid_request_error` immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
+- **User Error Veto**: Genuine client errors (HTTP 400 `invalid_request_error`, 401 `Unauthorized`, non-model 403 `Forbidden`) immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
+- **Per-Tier `--settings` Override**: Every Vertex tier explicitly passes `--settings '{"env":{...}}'` with its project and credentials so user `settings.json` environment defaults never hijack project routing.
 - **Shared-Quota Bypass (Cross-Provider)**: When Tier 1 (EnMaaS) exhausts shared enterprise quota (429), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
 - **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted to prevent redundant invocations against the same project quota. Note that `primaryProject` takes precedence over the legacy `project` parameter.
 - **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` (and any mode-appended prompt) is capped at 100KB to prevent argument buffer overflow and enforce clean streaming via temporary files (`E2BIG` prevention). When failover is enabled, system prompts are safely injected via temporary file redirection (`"$(< "$_spfile")"`) rather than raw command-line argument expansion.
@@ -123,9 +124,9 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 |---|---|---|
 | `prompt` | Yes | The prompt to send (combined prompt + systemPrompt <= 100KB) |
 | `mode` | No | Dispatch mode (see table above) |
-| `model` | No | Exact model name (e.g. `claude-opus-5-5`, `claude-sonnet-5-5`, `rits/zai-org/glm-5-3`) |
-| `secondaryModel` | No | Fallback model name for cross-provider failover (defaults to Sonnet) |
-| `tertiaryModel` | No | Tertiary model name for 3-tier cascade fallback (defaults to Sonnet) |
+| `model` | No | Exact model name (e.g. `sonnet`, `opus`, `claude-sonnet-5`, `claude-opus-4-8`, `rits/zai-org/glm-5-3`) |
+| `secondaryModel` | No | Fallback model name for cross-provider failover (defaults to `sonnet`) |
+| `tertiaryModel` | No | Tertiary model name for 3-tier cascade fallback (defaults to `sonnet`) |
 | `effort` | No | `low` / `medium` / `high` / `xhigh` / `max` |
 | `provider` | No | Inference provider: `auto` (default), `enmaas`, or `vertex` |
 | `primaryProject` | No | Primary GCP project ID for Vertex AI execution |
