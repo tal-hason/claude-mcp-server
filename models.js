@@ -26,7 +26,7 @@ export async function fetchEnmaasModels(options = {}) {
     if (!res.ok) return { provider: 'enmaas', status: 'error', error: `HTTP ${res.status}: ${res.statusText}`, models: [] };
     const data = await res.json();
     const staticGateways = [
-      { id: 'rits/zai-org/glm-5-3', owner: 'curvebender', supportsEffort: false, claudeCompatible: true, provider: 'enmaas', tier: 'free', cost: 'free' },
+      { id: 'rits/zai-org/glm-5-3', owner: 'zai-org', supportsEffort: false, claudeCompatible: true, provider: 'enmaas', tier: 'free', cost: 'free' },
     ];
     const fetched = (data.data || []).map((m) => {
       const isCompat = m.id.startsWith('rits/') || m.id.startsWith('claude-');

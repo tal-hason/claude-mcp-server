@@ -942,7 +942,7 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
   });
 
   it('T-38: Non-failover command redacts bearer tokens emitted to stderr during runtime execution (C7-11 / T-P6-5)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-non-failover-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-non-failover-'));
     try {
       const mockBin = path.join(tmpDir, 'mock-claude.sh');
       fs.writeFileSync(mockBin, '#!/bin/bash\necho "Authorization: Bearer super-secret-token" >&2\necho "NORMAL_OUTPUT"\nexit 0\n', { mode: 0o755 });

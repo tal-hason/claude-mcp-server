@@ -19,7 +19,7 @@ describe('ATDD Layer 1: Model Discovery & Capabilities (models.js)', () => {
       ok: true,
       json: async () => ({
         data: [
-          { id: 'rits/zai-org/glm-5-3', owned_by: 'curvebender' },
+          { id: 'rits/zai-org/glm-5-3', owned_by: 'zai-org' },
           { id: 'gpt-5.4', owned_by: 'openai' },
         ],
       }),

@@ -2,7 +2,7 @@
   "name": "claude-cli",
   "displayName": "Claude CLI",
   "version": "0.8.0",
-  "description": "Claude CLI bridge with Red Hat EnMaaS AI Gateway support and GCP Vertex Multi-Project Budget Failover.",
+  "description": "Claude CLI bridge with EnMaaS AI Gateway support and GCP Vertex Multi-Project Budget Failover.",
   "author": {
     "name": "Tal Hason"
   },

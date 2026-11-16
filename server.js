@@ -23,7 +23,7 @@ const server = new McpServer({
 server.tool(
   'claude_models',
   [
-    'List available models for Red Hat EnMaaS AI Gateway and GCP Vertex AI projects with cost and tier tags.',
+    'List available models for EnMaaS AI Gateway and GCP Vertex AI projects with cost and tier tags.',
     'INSTRUCTION: Call this tool FIRST to inspect supported models before generating a command with claude_prompt.',
     'Returns real-time models for EnMaaS (free GLM 5.3) and supported canonical Claude models (sonnet, opus, haiku, claude-sonnet-5, claude-opus-4-8) per Vertex AI project.',
   ].join(' '),
@@ -42,7 +42,7 @@ server.tool(
   [
     'Build a Claude CLI command with intelligent work-to-model mode defaults, gateway routing, and 3-tier failover cascade.',
     'INSTRUCTION: Call claude_models first to discover supported models before calling this tool.',
-    'Supports Red Hat EnMaaS AI Gateway (free GLM 5.3) and GCP Vertex AI (canonical sonnet, opus, claude-sonnet-5, claude-opus-4-8) with shared-quota bypass and tertiary fallback.',
+    'Supports EnMaaS AI Gateway (free GLM 5.3) and GCP Vertex AI (canonical sonnet, opus, claude-sonnet-5, claude-opus-4-8) with shared-quota bypass and tertiary fallback.',
     'Returns JSON { command, cwd, description, block_until_ms } for agent shell execution.',
   ].join(' '),
   {
