@@ -1,5 +1,5 @@
-// claude-mcp-server/test/darwin-audit.test.js
-// @ai-rules: [Pattern]: Verification of Darwin Multi-Lens & Governance Findings (N-1, F-1r, F-11, N-10, F-17).
+// claude-mcp-server/test/security-audit.test.js
+// @ai-rules: [Pattern]: Verification of Security Audit Multi-Lens & Governance Findings (N-1, F-1r, F-11, N-10, F-17).
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +17,7 @@ const scrubber = createEnvScrubber();
 beforeEach(() => scrubber.scrub());
 afterEach(() => scrubber.restore());
 
-describe('Darwin Remediation - N-1: Provider Resolution Precedence', () => {
+describe('Security Audit Remediation - N-1: Provider Resolution Precedence', () => {
   it('explicit provider: vertex with RITS model does NOT resolve to EnMaaS (N-1)', () => {
     const config = resolveFailoverConfig({
       provider: 'vertex',
@@ -41,7 +41,7 @@ describe('Darwin Remediation - N-1: Provider Resolution Precedence', () => {
   });
 });
 
-describe('Darwin Remediation - F-1r: Combined Prompt + SystemPrompt Guard', () => {
+describe('Security Audit Remediation - F-1r: Combined Prompt + SystemPrompt Guard', () => {
   it('rejects when prompt + systemPrompt byte length exceeds 100KB (F-1r)', () => {
     const prompt = 'a'.repeat(60 * 1024);
     const systemPrompt = 'b'.repeat(50 * 1024);
@@ -61,7 +61,7 @@ describe('Darwin Remediation - F-1r: Combined Prompt + SystemPrompt Guard', () =
   });
 });
 
-describe('Darwin Remediation - F-17: Project Collision Deduplication', () => {
+describe('Security Audit Remediation - F-17: Project Collision Deduplication', () => {
   it('discards secondary project when identical to primary project (F-17)', () => {
     const config = resolveFailoverConfig({
       provider: 'vertex',
@@ -114,11 +114,11 @@ describe('Darwin Remediation - F-17: Project Collision Deduplication', () => {
   });
 });
 
-describe('Darwin Remediation - F-11 & N-10: Runtime Failover Simulation', () => {
+describe('Security Audit Remediation - F-11 & N-10: Runtime Failover Simulation', () => {
   let tmpDir, mockClaudeBin, behaviorFile;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-audit-test-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-audit-test-'));
     mockClaudeBin = path.join(tmpDir, 'mock-claude.sh');
     behaviorFile = path.join(tmpDir, 'behavior.txt');
 
@@ -201,7 +201,7 @@ exit 0
   });
 });
 
-describe('Darwin Remediation - N-6: Ambient Polluted Environment Immunity', () => {
+describe('Security Audit Remediation - N-6: Ambient Polluted Environment Immunity', () => {
   it('cleanly isolates execution regardless of ambient polluted variables (N-6)', () => {
     // Pollute all tracked environment variables
     const polluted = {};
@@ -218,7 +218,7 @@ describe('Darwin Remediation - N-6: Ambient Polluted Environment Immunity', () =
   });
 });
 
-describe('Darwin Remediation - N-12: Deduplicated Tier Args with System Prompt and Resume', () => {
+describe('Security Audit Remediation - N-12: Deduplicated Tier Args with System Prompt and Resume', () => {
   it('ensures tertiaryArgs contains --system-prompt and --resume flags matching secondary (N-12)', () => {
     const res = buildCommand({
       prompt: 'test prompt',
@@ -242,7 +242,7 @@ describe('Darwin Remediation - N-12: Deduplicated Tier Args with System Prompt a
   });
 });
 
-describe('Darwin Remediation - F-8: Stderr Secret Redaction', () => {
+describe('Security Audit Remediation - F-8: Stderr Secret Redaction', () => {
   it('redacts Authorization: Bearer, Proxy-Authorization, ENMAAS_KEY, private_key_id, and PEM bodies (F-8)', () => {
     const testCases = [
       'Authorization: Bearer my-secret-token-abc',
@@ -253,7 +253,7 @@ describe('Darwin Remediation - F-8: Stderr Secret Redaction', () => {
       '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----',
     ];
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-redact-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-redact-'));
     const mockBin = path.join(tmpDir, 'mock-err.sh');
     const errText = testCases.join('\n');
     fs.writeFileSync(mockBin, `#!/bin/bash\ncat <<'EOF' >&2\n${errText}\nEOF\nexit 1\n`, { mode: 0o755 });
@@ -292,9 +292,9 @@ describe('Darwin Remediation - F-8: Stderr Secret Redaction', () => {
   });
 });
 
-describe('Darwin Remediation - N-2: Linear Non-Looping Cascade Bounded Invocations', () => {
+describe('Security Audit Remediation - N-2: Linear Non-Looping Cascade Bounded Invocations', () => {
   it('makes at most 3 invocations when all tiers fail and terminates without looping (N-2)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-invoke-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-invoke-'));
     const countFile = path.join(tmpDir, 'count.txt');
     fs.writeFileSync(countFile, '0');
     const mockBin = path.join(tmpDir, 'mock-count.sh');
@@ -400,7 +400,7 @@ describe('Farley ATDD T-5: Timeout Process Group Termination Without Foreground 
   });
 
   it('terminates background child processes cleanly on timeout (T-5)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t5-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-t5-'));
     try {
       const childPidFile = path.join(tmpDir, 'child.pid');
       const mockBin = path.join(tmpDir, 'mock-spawn-sleep.sh');
@@ -464,7 +464,7 @@ exit 0
 
 describe('Farley ATDD T-6: Concurrent Session Isolation and Buffer Scoping (failover-scripts.js)', () => {
   it('Session 1 trap removes out.$$.* without touching Session 2 buffer file in shared marker dir (T-6)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t6-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-t6-'));
     try {
       const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
       fs.mkdirSync(markerDir, { recursive: true });
@@ -519,7 +519,7 @@ describe('Farley ATDD T-7: Sticky Marker Creation, Absence on Failure, and Delet
   let tmpDir, mockBin, behaviorFile;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t7-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-t7-'));
     mockBin = path.join(tmpDir, 'mock-claude.sh');
     behaviorFile = path.join(tmpDir, 'behavior.txt');
 
@@ -645,7 +645,7 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
   });
 
   it('terminates process group and cleans temp files on wrapper SIGTERM (C8-1 / T-8)', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t8-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-t8-'));
     try {
       const sentinelPid = path.join(tmpDir, 'child.pid');
       const mockBin = path.join(tmpDir, 'mock-sleep.sh');
@@ -729,7 +729,7 @@ describe('Farley ATDD T-9: Node and Formatter Preflight Validation (command-buil
     const res = buildCommand({ prompt: 'test preflight fail', mode: 'architect' });
     const parsed = JSON.parse(res.content[0].text);
 
-    const mockBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-mock-bin-'));
+    const mockBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-mock-bin-'));
     let failed = false;
     let stderr = '';
     let exitCode = 0;
@@ -767,7 +767,7 @@ describe('Farley ATDD T-10: Sticky Marker Expiration and Bypass Lifecycle (failo
   let tmpDir, mockBin, behaviorFile;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t10-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-t10-'));
     mockBin = path.join(tmpDir, 'mock-claude.sh');
     behaviorFile = path.join(tmpDir, 'behavior.txt');
 
@@ -854,7 +854,7 @@ exit 0
   });
 });
 
-describe('Darwin Pass 6 Remediation: Process Safety & Sweep Hardening (C7-2, C7-4, C7-6, C7-12)', () => {
+describe('Security Audit Pass 6 Remediation: Process Safety & Sweep Hardening (C7-2, C7-4, C7-6, C7-12)', () => {
   it('_cleanup traps and _run_to properly handle timeout process group signaling (C7-2 / T-P6-2)', () => {
     const res = buildCommand({
       prompt: 'test pgid signal',
@@ -895,7 +895,7 @@ describe('Darwin Pass 6 Remediation: Process Safety & Sweep Hardening (C7-2, C7-
   });
 
   it('Tier 1 exit code 137 (SIGKILL timeout) triggers secondary failover (C7-4 / T-P6-4)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-t137-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-t137-'));
     try {
       const mockBin = path.join(tmpDir, 'mock-claude.sh');
       const behaviorFile = path.join(tmpDir, 'behavior.txt');
@@ -959,7 +959,7 @@ exit 0
   });
 
   it('restores ambient umask so child process executes with ambient umask (C7-12 / T-P6-6)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-umask-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-umask-'));
     try {
       const mockBin = path.join(tmpDir, 'mock-umask.sh');
       const umaskCapture = path.join(tmpDir, 'captured_umask.txt');
@@ -1009,7 +1009,7 @@ exit 0
   });
 
   it('preserves directories and files younger than 180m inside marker dir (C7-6 / T-P6-8)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-sweep-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-sweep-'));
     try {
       const markerDir = path.join(tmpDir, `claude-cli-${process.getuid ? process.getuid() : 0}`);
       fs.mkdirSync(markerDir, { recursive: true });
@@ -1055,7 +1055,7 @@ exit 0
   });
 });
 
-describe('Darwin Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T-P6-7, T-P6-9)', () => {
+describe('Security Audit Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T-P6-7, T-P6-9)', () => {
   it('redacts multi-line PEM blocks without swallowing subsequent lines (C7-7)', () => {
     assert.ok(!REDACT_SED.includes('/c\\\\'), 'REDACT_SED must not use non-portable c\\ sed command');
     assert.ok(REDACT_SED.includes('/^[A-Za-z0-9+\\/=]{16,}/d'), 'REDACT_SED must use non-swallowing base64 deletion pattern');
@@ -1132,7 +1132,7 @@ describe('Darwin Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T
   });
 
   it('XDG_RUNTIME_DIR expansion creates /claude-cli-$_uid subdirectory (MEDIUM-1)', () => {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-xdg-test-'));
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-xdg-test-'));
     try {
       const mockBin = path.join(baseDir, 'mock.sh');
       fs.writeFileSync(mockBin, '#!/bin/bash\necho "OK"\nexit 0\n', { mode: 0o755 });
@@ -1189,9 +1189,9 @@ describe('Darwin Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T
   });
 });
 
-describe('Darwin Remediation - C8-2: Preserve Partial stdout on Terminal Failure & User Veto (T-7)', () => {
+describe('Security Audit Remediation - C8-2: Preserve Partial stdout on Terminal Failure & User Veto (T-7)', () => {
   it('emits partial stdout before exit code on terminal cascade failure (C8-2 / T-7)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-stdout-term-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-stdout-term-'));
     try {
       const mockBin = path.join(tmpDir, 'mock.sh');
       fs.writeFileSync(mockBin, '#!/bin/bash\necho "Partial response before crash"\necho "Fatal terminal error" >&2\nexit 1\n', { mode: 0o755 });
@@ -1226,7 +1226,7 @@ describe('Darwin Remediation - C8-2: Preserve Partial stdout on Terminal Failure
   });
 
   it('emits partial stdout before exit on 401/403 user error veto (C8-2 / T-7)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-stdout-veto-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-stdout-veto-'));
     try {
       const mockBin = path.join(tmpDir, 'mock.sh');
       fs.writeFileSync(mockBin, '#!/bin/bash\necho "Partial reasoning before auth failure"\necho "HTTP 401 Unauthorized" >&2\nexit 1\n', { mode: 0o755 });
@@ -1261,7 +1261,7 @@ describe('Darwin Remediation - C8-2: Preserve Partial stdout on Terminal Failure
   });
 });
 
-describe('Darwin Pass 8 Remediation: Mutation Killers (C8-7)', () => {
+describe('Security Audit Pass 8 Remediation: Mutation Killers (C8-7)', () => {
   it('enforces umask 077 in failover script prologue (C8-7)', () => {
     const res = buildCommand({
       prompt: 'test umask',
@@ -1275,8 +1275,8 @@ describe('Darwin Pass 8 Remediation: Mutation Killers (C8-7)', () => {
   });
 
   it('rejects candidate dir if it is a symlink and falls back to safe mktemp directory (C8-7 / T-8 security)', () => {
-    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-symlink-test-'));
-    const foreignDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-foreign-target-'));
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-symlink-test-'));
+    const foreignDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-foreign-target-'));
     try {
       const uid = process.getuid ? process.getuid() : 0;
       const candSymlink = path.join(baseDir, `claude-cli-${uid}`);
@@ -1312,7 +1312,7 @@ describe('Darwin Pass 8 Remediation: Mutation Killers (C8-7)', () => {
   });
 
   it('vetoes failover on user error (401/403) even when stderr contains transient error keywords (C8-7)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-veto-precedence-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-veto-precedence-'));
     try {
       const mockBin = path.join(tmpDir, 'mock.sh');
       const callCountFile = path.join(tmpDir, 'call_count');
@@ -1373,7 +1373,7 @@ fi
   });
 
   it('redacts partial stdout on terminal failure before flushing (C8-2 / C6)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-stdout-redact-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-stdout-redact-'));
     try {
       const mockBin = path.join(tmpDir, 'mock.sh');
       fs.writeFileSync(mockBin, `#!/bin/bash
@@ -1410,7 +1410,7 @@ exit 1
   });
 
   it('resiliently falls back to cat in failover _redact under set -eo pipefail (R1 / R5)', () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'darwin-redact-resilience-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audit-redact-resilience-'));
     try {
       const mockBin = path.join(tmpDir, 'mock.sh');
       fs.writeFileSync(mockBin, `#!/bin/bash

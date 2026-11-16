@@ -1,11 +1,11 @@
 ---
 name: claude-dispatch
-description: Dispatch subagent tasks to Claude Code CLI via claude-cli MCP server, supporting Red Hat EnMaaS AI Gateway and GCP Vertex AI with budget failover.
+description: Dispatch subagent tasks to Claude Code CLI via claude-cli MCP server, supporting EnMaaS AI Gateway and GCP Vertex AI with budget failover.
 ---
 
 # Claude Dispatch Skill
 
-Enables agents to dispatch tasks to Claude Code CLI via the `claude-cli` MCP server, supporting Red Hat EnMaaS AI Gateway routing, GCP Vertex AI, and automated budget failover.
+Enables agents to dispatch tasks to Claude Code CLI via the `claude-cli` MCP server, supporting EnMaaS AI Gateway routing, GCP Vertex AI, and automated budget failover.
 
 ## 1. Core Tools
 
@@ -40,7 +40,7 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 
 ## 2. Providers & Environment Configuration
 
-### Red Hat EnMaaS AI Gateway & 3-Tier Cascade Failover
+### EnMaaS AI Gateway & 3-Tier Cascade Failover
 - Gateway URL: Configured via `ENMAAS_BASE_URL` (defaults to `https://api.enmaas.example.com`).
 - Authentication: `ENMAAS_KEY` environment variable (required when routing to EnMaaS).
 - **Process Environment & Security Boundary**:

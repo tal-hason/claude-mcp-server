@@ -17,7 +17,7 @@ test('fetchEnmaasModels - successful model discovery', async () => {
     ok: true,
     json: async () => ({
       data: [
-        { id: 'rits/zai-org/glm-5-3', owned_by: 'curvebender' },
+        { id: 'rits/zai-org/glm-5-3', owned_by: 'zai-org' },
         { id: 'claude-3-5-sonnet', owned_by: 'anthropic' },
         { id: 'gpt-5.4', owned_by: 'openai' },
       ],

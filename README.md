@@ -161,7 +161,7 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 | `CLAUDE_BIN` | `claude` | Path to Claude CLI binary |
 | `CLAUDE_TIMEOUT` | `1800` | Per-tier execution timeout in seconds |
 | `CLAUDE_MCP_DIR` | `~/.local/share/claude-mcp-server` | Install location (install.sh only) |
-| `ENMAAS_BASE_URL` | `https://api.enmaas.example.com` | Base URL for Red Hat EnMaaS AI Gateway |
+| `ENMAAS_BASE_URL` | `https://api.enmaas.example.com` | Base URL for EnMaaS AI Gateway |
 | `ENMAAS_KEY` | (empty) | API key / token for EnMaaS authentication (recommended via shell env) |
 | `VERTEX_PRIMARY_PROJECT` | (empty) | Default primary GCP project ID |
 | `VERTEX_SECONDARY_PROJECT` | (empty) | Secondary GCP project ID for failover |
