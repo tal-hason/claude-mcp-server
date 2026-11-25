@@ -935,6 +935,27 @@ esac
     fs.writeFileSync(path.join(tmpDir, `${name}.jsonl`), `${exitCode}\n${events.join('\n')}\n`);
   };
 
+  const buildNoTimeoutBinDir = () => {
+    const dir = path.join(tmpDir, 'no-timeout-bin');
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+      const bins = [
+        'bash', 'sh', 'node', 'sed', 'cat', 'rm', 'mktemp', 'mkdir', 'chmod',
+        'find', 'id', 'grep', 'tail', 'touch', 'date', 'printf', 'wc', 'sleep', '[',
+        'head', 'mv',
+      ];
+      for (const bin of bins) {
+        const resolved = spawnSync('which', [bin], { encoding: 'utf8' });
+        if (resolved.status === 0 && resolved.stdout.trim()) {
+          const target = resolved.stdout.trim().split('\n')[0];
+          const linkPath = path.join(dir, bin);
+          if (!fs.existsSync(linkPath)) fs.symlinkSync(target, linkPath);
+        }
+      }
+    }
+    return dir;
+  };
+
   it('T-S1: live FD 3 redacted progress streaming, tier stdout isolation, and standalone REDACT_SED unclosed-quote checks', () => {
     writeFixture('FIXTURE_T1', 1, [
       JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p1', session_id: 's1' }),
@@ -1384,21 +1405,7 @@ esac
     }
 
     // No-timeout PATH branch
-    const noTimeoutBinDir = path.join(tmpDir, 'no-timeout-bin');
-    fs.mkdirSync(noTimeoutBinDir, { recursive: true });
-    const bins = [
-      'bash', 'sh', 'node', 'sed', 'cat', 'rm', 'mktemp', 'mkdir', 'chmod',
-      'find', 'id', 'grep', 'tail', 'touch', 'date', 'printf', 'wc', 'sleep', '[',
-      'head', 'mv',
-    ];
-    for (const bin of bins) {
-      const resolved = spawnSync('which', [bin], { encoding: 'utf8' });
-      if (resolved.status === 0 && resolved.stdout.trim()) {
-        const target = resolved.stdout.trim().split('\n')[0];
-        const linkPath = path.join(noTimeoutBinDir, bin);
-        if (!fs.existsSync(linkPath)) fs.symlinkSync(target, linkPath);
-      }
-    }
+    const noTimeoutBinDir = buildNoTimeoutBinDir();
 
     const noToRuntime = fs.mkdtempSync(path.join(tmpDir, 'm3-noto-'));
     fs.writeFileSync(behaviorFile, 'BG_SLEEP_SUCCESS\n');
@@ -1504,7 +1511,7 @@ esac
       if (preserve) assert.ok(passRun.stdout.includes(preserve), `stream-format passthrough [${label}] must preserve "${preserve}"; got: ${passRun.stdout}`);
     }
 
-    // F-3: hostile tool_use block.name redaction, OSC 52 strip, and length cap
+    // F-3 & T-1: hostile tool_use block.name redaction, OSC 52 strip, and <=64 char rendered tool name cap
     const hostileName = 'mcp__Authorization: Bearer tool-name-secret\n\x1b]52;c;evil\x07__' + 'z'.repeat(90);
     const f3Json = JSON.stringify({
       type: 'assistant',
@@ -1516,6 +1523,20 @@ esac
     assert.ok(!f3Run.stdout.includes('\x1b]52'), 'F-3 must strip OSC 52 escape sequence from tool_use block.name');
     assert.ok(f3Run.stdout.includes('[REDACTED]'), `F-3 must emit [REDACTED]; got: ${f3Run.stdout}`);
     assert.ok(f3Run.stdout.trimEnd().length < 200, `F-3 output line must be < 200 chars, got ${f3Run.stdout.trimEnd().length}`);
+    const plainF3 = f3Run.stdout.replace(/\x1b\[[0-9;]*m/g, '');
+    const nameMatch = plainF3.match(/⏵ ([^\n:]+?)(?:: |\n|$)/);
+    assert.ok(nameMatch, `T-1 must render ⏵ tool line; got: ${plainF3}`);
+    assert.ok(nameMatch[1].length <= 64, `T-1 rendered tool name must be <= 64 chars (got ${nameMatch[1].length}: ${nameMatch[1]})`);
+
+    // T-2: TOOL_COLOR lookup must not resolve Object.prototype keys
+    const t2Input = ['constructor', 'toString', '__proto__'].map((name) =>
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input: { command: 'echo ok' } }] } })
+    ).join('\n') + '\n';
+    const t2Run = spawnSync('node', [FORMATTER_PATH], { input: t2Input, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+    assert.equal(t2Run.status, 0, `T-2 exited ${t2Run.status}`);
+    assert.ok(!t2Run.stdout.includes('function '), `T-2 must not interpolate prototype function into ANSI prefix; got: ${t2Run.stdout}`);
+    assert.ok(!t2Run.stdout.includes('[native code]'), `T-2 must not interpolate [native code]; got: ${t2Run.stdout}`);
+    assert.ok(t2Run.stdout.includes('⏵ constructor'), `T-2 must render tool name constructor; got: ${t2Run.stdout}`);
 
     // F-11: object-shaped model, session_id, tool_use.name, tool_use.input.command
     const f11Input = [
@@ -1562,7 +1583,7 @@ esac
     assert.ok(l4Run.stdout.includes('Turn1\n') && l4Run.stdout.includes('Turn2'), `L-4 must separate Turn1 and tool_use/Turn2 with newline; got: ${JSON.stringify(l4Run.stdout)}`);
   });
 
-  it('DR-F1: undrained Node spawn socketpair stderr completes cascade cleanly without blocking', async () => {
+  it('DR-F1: socketpair stderr cascade works undrained without timeout (R-3), drains progress & caps socket queue (T-3)', async () => {
     const t1Tools = Array.from({ length: 4000 }, (_, i) =>
       JSON.stringify({
         type: 'assistant',
@@ -1574,7 +1595,10 @@ esac
       ...t1Tools,
       JSON.stringify({ type: 'error', error: { message: 'API Error: 429 Too Many Requests' } }),
     ]);
-    fs.writeFileSync(path.join(tmpDir, 'FIXTURE_SP_T1.err'), 'raw tier1 err\n');
+    fs.writeFileSync(
+      path.join(tmpDir, 'FIXTURE_SP_T1.err'),
+      ('STDERR_300K_' + 'x'.repeat(80) + '\n').repeat(3400)
+    );
 
     const t2Tools = Array.from({ length: 2000 }, (_, i) =>
       JSON.stringify({
@@ -1587,7 +1611,6 @@ esac
       ...t2Tools,
       JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'SOCKETPAIR_CASCADE_OK\n' }] } }),
     ]);
-    fs.writeFileSync(behaviorFile, 'FIXTURE_SP_T1\nFIXTURE_SP_T2\n');
 
     const { command } = JSON.parse(buildCommand({
       prompt: 'test socketpair cascade',
@@ -1597,34 +1620,182 @@ esac
       secondaryProject: 'p2',
     }, { CLAUDE_BIN: mockClaudeBin, CLAUDE_TIMEOUT: '5' }).content[0].text);
 
+    // Part A (R-3): undrained socketpair + no-timeout PATH
+    const noTimeoutBinDir = buildNoTimeoutBinDir();
+    const noToRuntime = fs.mkdtempSync(path.join(tmpDir, 'sp-noto-'));
+    fs.writeFileSync(behaviorFile, 'FIXTURE_SP_T1\nFIXTURE_SP_T2\n');
+
     const t0 = Date.now();
     let timedOut = false;
-    const child = spawn('bash', {
-      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+    const childA = spawn(path.join(noTimeoutBinDir, 'bash'), {
+      env: { ...process.env, PATH: noTimeoutBinDir, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: noToRuntime },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    // Intentionally do NOT attach any listener or .resume() to child.stderr
-    const stdoutChunks = [];
-    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
-    child.stdin.end(command);
+    // Intentionally do NOT attach any listener or .resume() to childA.stderr
+    const stdoutAChunks = [];
+    childA.stdout.on('data', (chunk) => stdoutAChunks.push(chunk));
+    childA.stdin.end(command);
 
     const safetyTimer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      childA.kill('SIGKILL');
     }, 4500);
 
-    const code = await new Promise((resolve) => {
-      child.on('close', (exitCode) => {
+    const codeA = await new Promise((resolve) => {
+      childA.on('close', (exitCode) => {
         clearTimeout(safetyTimer);
         resolve(exitCode);
       });
     });
-    const elapsed = Date.now() - t0;
-    const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+    const elapsedA = Date.now() - t0;
+    const stdoutA = Buffer.concat(stdoutAChunks).toString('utf8');
 
-    assert.equal(timedOut, false, `Socketpair stderr hung past 4500ms safety kill (elapsed ${elapsed}ms)`);
-    assert.equal(code, 0, `Expected exit 0 on socketpair cascade, got ${code}`);
-    assert.ok(elapsed < 4000, `Expected <4000ms without socketpair block, took ${elapsed}ms`);
-    assert.ok(stdout.includes('SOCKETPAIR_CASCADE_OK'), `stdout must include SOCKETPAIR_CASCADE_OK, got: ${stdout}`);
+    assert.equal(timedOut, false, `Part A: socketpair stderr hung past 4500ms safety kill (elapsed ${elapsedA}ms)`);
+    assert.equal(codeA, 0, `Part A: expected exit 0 on socketpair cascade without timeout, got ${codeA}`);
+    assert.ok(elapsedA < 4000, `Part A: expected <4000ms without socketpair block, took ${elapsedA}ms`);
+    assert.ok(stdoutA.includes('SOCKETPAIR_CASCADE_OK'), `Part A: stdout must include SOCKETPAIR_CASCADE_OK, got: ${stdoutA}`);
+
+    // Part B1 (T-3): drained socketpair progress delivery
+    const drainedRuntime = fs.mkdtempSync(path.join(tmpDir, 'sp-drain-'));
+    fs.writeFileSync(behaviorFile, 'FIXTURE_SP_T1\nFIXTURE_SP_T2\n');
+    const childB = spawn('bash', {
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: drainedRuntime },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const stdoutBChunks = [];
+    const stderrBChunks = [];
+    childB.stdout.on('data', (chunk) => stdoutBChunks.push(chunk));
+    childB.stderr.on('data', (chunk) => stderrBChunks.push(chunk));
+    childB.stdin.end(command);
+    const codeB = await new Promise((resolve) => childB.on('close', resolve));
+    const stdoutB = Buffer.concat(stdoutBChunks).toString('utf8');
+    const stderrB = Buffer.concat(stderrBChunks).toString('utf8');
+
+    assert.equal(codeB, 0, `Part B1: expected exit 0, got ${codeB}`);
+    assert.ok(stdoutB.includes('SOCKETPAIR_CASCADE_OK'), 'Part B1: stdout must include SOCKETPAIR_CASCADE_OK');
+    assert.ok(stderrB.includes('⚡ model:'), 'Part B1: drained socketpair stderr must deliver ⚡ model: progress');
+    assert.ok(stderrB.includes('⏵'), 'Part B1: drained socketpair stderr must deliver ⏵ tool_use progress');
+
+    // Part B2 (T-3): paused/undrained stream-format.js socketpair drops excess progress (16384 writableLength cap)
+    const capEvents = [
+      ...Array.from({ length: 2000 }, (_, i) =>
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              name: 'Bash',
+              input: { command: `echo prog_${String(i).padStart(4, '0')}_${'a'.repeat(80)}` },
+            }],
+          },
+        })
+      ),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'CAP_DONE\n' }] } }),
+    ].join('\n') + '\n';
+    const capFile = path.join(tmpDir, 'cap-events.jsonl');
+    fs.writeFileSync(capFile, capEvents);
+
+    const pySocketCap = [
+      'import os, socket, subprocess, json, sys',
+      'fmt, cap_file = sys.argv[1], sys.argv[2]',
+      's_parent, s_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)',
+      's_parent.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)',
+      's_parent.setblocking(False)',
+      'with open(cap_file, "rb") as f: payload = f.read()',
+      'env = dict(os.environ, CLAUDE_PROGRESS_FD=str(s_child.fileno()))',
+      'p = subprocess.Popen(["node", fmt], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(s_child.fileno(),), env=env)',
+      's_child.close()',
+      'try:',
+      '    out, err = p.communicate(payload, timeout=3)',
+      '    rc = p.returncode',
+      'except subprocess.TimeoutExpired:',
+      '    p.kill()',
+      '    out, err = p.communicate()',
+      '    rc = -1',
+      'total = 0',
+      'while True:',
+      '    try:',
+      '        chunk = s_parent.recv(65536)',
+      '        if not chunk: break',
+      '        total += len(chunk)',
+      '    except BlockingIOError:',
+      '        break',
+      's_parent.close()',
+      'print(json.dumps({"rc": rc, "receivedBytes": total, "stdout": out.decode("utf8", "replace"), "stderr": err.decode("utf8", "replace")}))',
+    ].join('\n');
+
+    const capRun = spawnSync('python3', ['-c', pySocketCap, FORMATTER_PATH, capFile], { encoding: 'utf8', timeout: 8000 });
+    assert.equal(capRun.status, 0, `Part B2: python3 socketpair driver failed: ${capRun.stderr}`);
+    const capRes = JSON.parse(capRun.stdout);
+    assert.equal(capRes.rc, 0, `Part B2: stream-format.js exited ${capRes.rc}; stderr=${capRes.stderr}`);
+    assert.ok(capRes.stdout.includes('CAP_DONE'), 'Part B2: stdout must emit CAP_DONE');
+    assert.ok(
+      capRes.receivedBytes > 0 && capRes.receivedBytes < 180000,
+      `Part B2: expected 0 < receivedBytes < 180000 due to bounded socket write cap, got ${capRes.receivedBytes}`
+    );
+  });
+
+  it('DR-R1-R2: preserves >1.1MB raw stderr tail and never leaks O_NONBLOCK onto shell FD 2', () => {
+    const bigErr = ('STDERR_1MB_LINE_' + 'x'.repeat(80) + '\n').repeat(11500) + 'FINAL_1MB_STDERR_TAIL_OK\n';
+    writeFixture('FIXTURE_1MB_T1', 1, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p1', session_id: 's-1mb-1' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'echo t1_prog' } }] } }),
+      JSON.stringify({ type: 'error', error: { message: 'API Error: 429 Too Many Requests' } }),
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'FIXTURE_1MB_T1.err'), bigErr);
+
+    writeFixture('FIXTURE_1MB_T2', 0, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p2', session_id: 's-1mb-2' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'R1_R2_CASCADE_OK\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_1MB_T1\nFIXTURE_1MB_T2\n');
+
+    const { command } = JSON.parse(buildCommand({
+      prompt: 'test 1.1mb stderr and fd2 flags',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockClaudeBin }).content[0].text);
+
+    const run = spawnSync('bash', {
+      input: command + '\ngrep "^flags:" /proc/self/fdinfo/2 >&2\n',
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: 10000,
+    });
+
+    assert.equal(run.status, 0, `Expected exit 0, got ${run.status}; stderr=${run.stderr.slice(0, 200)}`);
+    assert.ok(run.stdout.includes('R1_R2_CASCADE_OK'), 'stdout must include R1_R2_CASCADE_OK');
+    assert.ok(run.stderr.length > 1_050_000, `stderr must not truncate >1.1MB output (got ${run.stderr.length})`);
+    assert.ok(run.stderr.includes('FINAL_1MB_STDERR_TAIL_OK'), 'stderr must preserve FINAL_1MB_STDERR_TAIL_OK at tail');
+
+    const flagsMatches = [...run.stderr.matchAll(/^flags:\s*([0-7]+)/gm)];
+    assert.ok(flagsMatches.length > 0, 'stderr must include /proc/self/fdinfo/2 flags line');
+    const octalFlags = flagsMatches[flagsMatches.length - 1][1];
+    assert.equal(parseInt(octalFlags, 8) & 0o4000, 0, `O_NONBLOCK (04000) must not leak onto shell FD 2 (flags=${octalFlags})`);
+  });
+
+  it('DR-S5: O(n) redaction completes under 1000ms on 200KB trailing spaces and 80KB unclosed key', () => {
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.CLAUDE_PROGRESS_FD;
+
+    const payload = [
+      'authorization:' + ' '.repeat(200000),
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ENMAAS_KEY="long-sec-val-' + 'x'.repeat(80000) } }] },
+      }),
+    ].join('\n') + '\n';
+
+    const t0 = Date.now();
+    const run = spawnSync('node', [FORMATTER_PATH], { input: payload, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+    const elapsed = Date.now() - t0;
+
+    assert.equal(run.status, 0, `stream-format.js exited ${run.status}: ${run.stderr}`);
+    assert.ok(elapsed < 1000, `Expected O(n) redaction <1000ms, took ${elapsed}ms`);
+    assert.ok(run.stdout.includes('[REDACTED]'), 'Must redact 80KB unclosed key value');
+    assert.ok(!run.stdout.includes('long-sec-val-'), 'Must not leak long-sec-val-');
   });
 });

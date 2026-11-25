@@ -881,7 +881,7 @@ describe('Streaming Progress, Headless Isolation & Fitness Gates (T-S2, T-S4, T-
     assert.match(promptTool.description || '', /session/i, 'claude_prompt description must mention session');
   });
 
-  it('T-S8: line-budget fitness (<=100 lines), node --check, bash -n, and tracked-file path hygiene', () => {
+  it('T-S8: line-budget fitness (<=100 lines, <=190 cols), node --check, bash -n, release bundle & path hygiene', () => {
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const rootDir = path.resolve(__dirname, '..');
     const rootJsFiles = [
@@ -892,17 +892,28 @@ describe('Streaming Progress, Headless Isolation & Fitness Gates (T-S2, T-S4, T-
       'models.js',
       'modes.js',
       'providers.js',
+      'redact.js',
       'stream-format.js',
     ];
 
     for (const file of rootJsFiles) {
       const fullPath = path.join(rootDir, file);
       const content = fs.readFileSync(fullPath, 'utf8');
-      const lineCount = content.replace(/\n$/, '').split('\n').length;
-      assert.ok(lineCount <= 100, `${file} must be <= 100 lines (got ${lineCount})`);
+      const lines = content.replace(/\n$/, '').split('\n');
+      assert.ok(lines.length <= 100, `${file} must be <= 100 lines (got ${lines.length})`);
+      for (let i = 0; i < lines.length; i++) {
+        assert.ok(lines[i].length <= 190, `${file}:${i + 1} exceeds 190 cols (${lines[i].length})`);
+      }
       assert.doesNotThrow(() => {
         execSync(`node --check "${fullPath}"`, { stdio: 'pipe' });
       }, `${file} must pass node --check`);
+    }
+
+    const releaseYml = fs.readFileSync(path.join(rootDir, '.github', 'workflows', 'release.yml'), 'utf8');
+    const cpLine = releaseYml.split('\n').find((l) => l.includes('"$BUNDLE_DIR/"') && l.trim().startsWith('cp '));
+    assert.ok(cpLine, 'release.yml must contain cp ... "$BUNDLE_DIR/" bundle line');
+    for (const file of rootJsFiles) {
+      assert.ok(cpLine.includes(file), `release.yml bundle cp line must include ${file}`);
     }
 
     for (const shFile of ['setup.sh', 'install.sh']) {
