@@ -113,10 +113,12 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
   - Process timeouts: Exit code 124 or 137 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
 - **User Error Veto**: Genuine client errors (HTTP 400 `invalid_request_error`, 401 `Unauthorized`, non-model 403 `Forbidden`) immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
 - **Per-Tier `--settings` Override**: Every Vertex tier explicitly passes `--settings '{"env":{...}}'` with its project and credentials so user `settings.json` environment defaults never hijack project routing.
+- **Default Headless Isolation**: Headless `claude_prompt` invocations inject `--strict-mcp-config` and `"disableAllHooks": true` inside `--settings` by default so ambient user/project MCP servers and hooks never fire inside dispatched workers. Pass `enableHooks: true` or `enableMcp: true` to opt out explicitly.
 - **Shared-Quota Bypass (Cross-Provider)**: When Tier 1 (EnMaaS) exhausts shared enterprise quota (429), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
 - **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted to prevent redundant invocations against the same project quota. Note that `primaryProject` takes precedence over the legacy `project` parameter.
 - **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` (and any mode-appended prompt) is capped at 100KB to prevent argument buffer overflow and enforce clean streaming via temporary files (`E2BIG` prevention). When failover is enabled, system prompts are safely injected via temporary file redirection (`"$(< "$_spfile")"`) rather than raw command-line argument expansion.
-- **Automated Stderr Redaction**: All error logs and terminal failure outputs across both failover cascades and single-tier commands are filtered through stream-level `sed -E` redaction to strip Bearer, Basic, and Token authorization headers, API keys, JWTs, JSON cookies, and multi-line PEM blocks prior to emitting to stderr. Redaction applies strictly to stderr error logs; successful model output on stdout is buffered and delivered unmodified.
+- **Real-Time FD 3 Redacted Progress Streaming**: Single-tier non-failover commands clear `CLAUDE_PROGRESS_FD=` so live progress (`⚡ model`, `⏵ Tool`, `↻ retry`) streams inline to `stdout`. During failover cascades, `claude` runs with `3>&-` (closing FD 3 for child/background processes) while `stream-format.js` receives `CLAUDE_PROGRESS_FD=3`, streaming redacted progress events to FD 3 (`_p_redact` -> `stderr`) in real time while assistant text and terminal errors buffer cleanly per tier (`$_o` -> `stdout`).
+- **Automated Stderr Redaction**: All error logs, live FD 3 progress streams, and terminal failure outputs across both failover cascades and single-tier commands are filtered through `stream-format.js` and stream-level `sed -E` (`_p_redact`) redaction to strip Bearer, Basic, and Token authorization headers, API keys, JWTs, JSON cookies, and multi-line PEM blocks prior to emitting to stderr. Redaction applies strictly to stderr/progress streams and terminal failure flushes; successful assistant output on stdout is delivered unmodified.
 
 ### Parameters
 
@@ -138,6 +140,8 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 | `systemPrompt` | No | System prompt override |
 | `sessionId` | No | Resume a previous session |
 | `cwd` | No | Working directory for Claude CLI |
+| `enableHooks` | No | Allow user/project hooks in headless run (`false` by default — injects `"disableAllHooks": true`) |
+| `enableMcp` | No | Allow user/project MCP servers in headless run (`false` by default — injects `--strict-mcp-config`) |
 
 ## Files
 

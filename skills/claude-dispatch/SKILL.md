@@ -37,6 +37,8 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
 - `systemPrompt` (string, optional): System prompt override.
 - `sessionId` (string, optional): Resume a previous session by ID.
 - `cwd` (string, optional): Target working directory.
+- `enableHooks` (boolean, optional): Allow user/project hooks in headless run (default `false` — injects `"disableAllHooks": true`).
+- `enableMcp` (boolean, optional): Allow user/project MCP servers in headless run (default `false` — injects `--strict-mcp-config`).
 
 ## 2. Providers & Environment Configuration
 
@@ -56,7 +58,9 @@ The `claude_prompt` tool acts as a pure command builder. It returns a JSON strin
   - **User-Error Veto**: Genuine client errors (HTTP 400 `invalid_request_error`, 401 `Unauthorized`, non-model 403 `Forbidden`) veto failover across all tiers and immediately exit with the failure status, preventing quota waste on unrecoverable authentication or request errors.
   - **Prompt Efficiency**: Prompts and system prompts are written once to private subshell temp files (`$_pfile`, `$_spfile`) and piped via stdin or file redirection, preventing command-line argument length (`E2BIG`) overflow.
   - **Sticky Failover**: Success on a fallback tier drops a sticky marker in `_marker_dir` (backed by `XDG_RUNTIME_DIR` or `/tmp`) to fast-path subsequent runs without repeating failed tiers. Success on Tier 1 clears fallback markers.
-  - **Security Redaction**: Stderr error logs across both failover cascades and single-tier commands pipe through automated stream-level `sed -E` redaction filtering Bearer, Basic, and Token schemes in Authorization headers, private_key_id, ENMAAS_KEY, multi-line PEM certificates, sk-ant-, ya29., glpat-, gho_/ghs_, JSON cookies, and sensitive tokens before emitting to stderr. Stdout output is buffered and emitted unmodified on success.
+  - **Live FD 3 Progress Streaming**: Single-tier non-failover runs clear `CLAUDE_PROGRESS_FD=` so `⚡ model`, `⏵ Tool`, and `↻ retry` stream inline to `stdout`. Failover tiers close FD 3 on `claude` (`3>&-`) and set `CLAUDE_PROGRESS_FD=3` on `stream-format.js` so redacted progress streams live to `stderr` via `_p_redact` while assistant text and terminal errors buffer cleanly per tier (`$_o` -> `stdout`).
+  - **Headless Isolation**: By default, `claude_prompt` injects `--strict-mcp-config` and `"disableAllHooks": true` inside `--settings` to isolate headless workers from user/project hooks and MCP servers unless `enableMcp: true` or `enableHooks: true` is passed.
+  - **Security Redaction**: Live FD 3 progress streams, stderr error logs, and terminal failure outputs across both failover cascades and single-tier commands filter through `stream-format.js` and `sed -E` (`_p_redact`) redaction stripping Bearer, Basic, and Token schemes in Authorization headers, private_key_id, ENMAAS_KEY, multi-line PEM certificates, sk-ant-, ya29., glpat-, gho_/ghs_, JSON cookies, and sensitive tokens before emitting to stderr. Stdout output is buffered and emitted unmodified on success.
   - **Execution Timeout**: Configured via `CLAUDE_TIMEOUT` (defaults to `1800` seconds / 30m). A tier execution exceeding this limit exits with code 124 or 137 and triggers failover to the next tier.
 
 ### Google Cloud Vertex AI
