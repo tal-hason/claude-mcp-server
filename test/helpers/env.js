@@ -25,6 +25,7 @@ export const TRACKED_ENV_VARS = [
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_ENVIRONMENT_KIND',
   'CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY',
+  'CLAUDE_PROGRESS_FD',
 ];
 
 export function createEnvScrubber(initialOverrides = {}) {

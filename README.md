@@ -113,10 +113,12 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
   - Process timeouts: Exit code 124 or 137 (controlled via `CLAUDE_TIMEOUT`, default 1800s).
 - **User Error Veto**: Genuine client errors (HTTP 400 `invalid_request_error`, 401 `Unauthorized`, non-model 403 `Forbidden`) immediately exit with the failure code without triggering failover, preventing wasteful quota consumption on unrecoverable caller errors.
 - **Per-Tier `--settings` Override**: Every Vertex tier explicitly passes `--settings '{"env":{...}}'` with its project and credentials so user `settings.json` environment defaults never hijack project routing.
+- **Default Headless Isolation**: Headless `claude_prompt` invocations inject `--strict-mcp-config` and `"disableAllHooks": true` inside `--settings` by default so ambient user/project MCP servers and hooks never fire inside dispatched workers. Pass `enableHooks: true` or `enableMcp: true` to opt out explicitly.
 - **Shared-Quota Bypass (Cross-Provider)**: When Tier 1 (EnMaaS) exhausts shared enterprise quota (429), the cascade bypasses Tier 2 (shared GCP project) and routes directly to Tier 3 (isolated dedicated quota). If Tier 3 fails, it gracefully falls back to Tier 2.
 - **Project Deduplication**: Identical project IDs across primary, secondary, and tertiary tiers are automatically deduplicated and promoted to prevent redundant invocations against the same project quota. Note that `primaryProject` takes precedence over the legacy `project` parameter.
 - **Prompt Size Guard**: The combined byte length of `prompt` and `systemPrompt` (and any mode-appended prompt) is capped at 100KB to prevent argument buffer overflow and enforce clean streaming via temporary files (`E2BIG` prevention). When failover is enabled, system prompts are safely injected via temporary file redirection (`"$(< "$_spfile")"`) rather than raw command-line argument expansion.
-- **Automated Stderr Redaction**: All error logs and terminal failure outputs across both failover cascades and single-tier commands are filtered through stream-level `sed -E` redaction to strip Bearer, Basic, and Token authorization headers, API keys, JWTs, JSON cookies, and multi-line PEM blocks prior to emitting to stderr. Redaction applies strictly to stderr error logs; successful model output on stdout is buffered and delivered unmodified.
+- **Real-Time FD 3 Redacted Progress Streaming**: Single-tier commands stream wrapper banners, `⚡ model | session`, progress hints (`⏵ Tool`, `↻ retry`), `result`/`error` payloads, and non-JSON passthrough lines to `stdout`, while raw `stderr` filters through `sed -E` (failing closed with `[claude-mcp] redaction unavailable` on `sed` failure). Failover commands keep winning-tier assistant text (or non-JSON passthrough) plus wrapper header/footer banners and any terminal error on `stdout`, while `CLAUDE_PROGRESS_FD=3` streams redacted progress live to `stderr` via non-blocking `/proc/self/fd/3` `O_NONBLOCK` on Linux FIFOs/pipes or bounded (`16KB`) `net.Socket` on Unix socketpairs/non-`/proc` hosts (dropping excess lines on full pipes/sockets and restoring blocking FD flags on exit), and shell status/`_redact` stderr flushes use `stream-format.js --flush-err` with a `250ms` stall-idle budget so undrained callers never hang.
+- **Automated Redaction**: Assistant `text` blocks on `stdout` emit verbatim on success. Progress banners/hints (`⚡`, `⏵`, `↻`), `result`/`error` payloads, and non-JSON passthrough lines scrub in-stream via `stream-format.js`, while raw `stderr` logs and terminal failure buffers filter through `sed -E` (`_p_redact`) stripping `Bearer`/`Basic`/`Token` `Authorization` & `Proxy-Authorization` headers, `key`/`token`/`secret`/`password`/`credentials`/`private_key_id`/`ENMAAS_KEY` assignments, `--api-key` flags and URL credentials, `sk-ant-`/`sk-proj-`/`ya29.`/`gh[pousr]_`/`github_pat_`/`glpat-` tokens, JWTs, Digest `response=` hashes, `Cookie` headers/fields, and single-line, multi-line, or unterminated PEM blocks — failing closed with `[claude-mcp] redaction unavailable` if `sed` is unavailable or errors.
 
 ### Parameters
 
@@ -138,6 +140,8 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 | `systemPrompt` | No | System prompt override |
 | `sessionId` | No | Resume a previous session |
 | `cwd` | No | Working directory for Claude CLI |
+| `enableHooks` | No | Allow user/project hooks in headless run (`false` by default — injects `"disableAllHooks": true`) |
+| `enableMcp` | No | Allow user/project MCP servers in headless run (`false` by default — injects `--strict-mcp-config`) |
 
 ## Files
 
@@ -145,7 +149,8 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 |---|---|
 | `server.js` | MCP entry point — thin wiring, delegates to command-builder |
 | `command-builder.js` | Pure logic — shellQuote, buildCommand, mode resolution |
-| `stream-format.js` | CLI streaming output formatter — strips ANSI, parses events, formats for UI |
+| `stream-format.js` | CLI streaming output formatter — parses events, scrubs progress/errors, flushes bounded stderr (`--flush-err`) |
+| `redact.js` | Single-source redaction (`REDACT_SED`, linear-time JS `redact()`), `quote`, and stall-bounded `flushStderr()` |
 | `failover.js` | Failover logic — Vertex quota retry, cross-provider, & 3-tier cascade failover |
 | `failover-scripts.js` | Shell script generation — heredoc templates, sticky markers, signal traps, and redaction |
 | `providers.js` | Provider routing & environment variables configuration |

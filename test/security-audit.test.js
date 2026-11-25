@@ -669,6 +669,16 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
         stdio: 'ignore',
       });
 
+      const isPidAlive = (pid) => {
+        try {
+          const s = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+          const st = s.slice(s.lastIndexOf(')') + 2, s.lastIndexOf(')') + 3);
+          return st !== 'Z' && st !== 'X';
+        } catch {
+          return false;
+        }
+      };
+
       const start = Date.now();
       while (!fs.existsSync(sentinelPid) && Date.now() - start < 5000) {
         await new Promise((r) => setTimeout(r, 20));
@@ -676,7 +686,7 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
       assert.ok(fs.existsSync(sentinelPid), 'Mock child PID sentinel must be created');
       const childPid = fs.readFileSync(sentinelPid, 'utf8').trim();
       assert.ok(childPid.length > 0, 'Child PID must be non-empty');
-      assert.ok(fs.existsSync(`/proc/${childPid}`), 'Child process must be running before SIGTERM');
+      assert.ok(isPidAlive(childPid), 'Child process must be running before SIGTERM');
 
       child.kill('SIGTERM');
 
@@ -687,11 +697,11 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
       assert.equal(exitCode, 143, `Expected exit code 143 on SIGTERM, got: ${exitCode}`);
 
       const killStart = Date.now();
-      while (fs.existsSync(`/proc/${childPid}`) && Date.now() - killStart < 1000) {
+      while (isPidAlive(childPid) && Date.now() - killStart < 1000) {
         await new Promise((r) => setTimeout(r, 50));
       }
 
-      const childStillAlive = fs.existsSync(`/proc/${childPid}`);
+      const childStillAlive = isPidAlive(childPid);
       if (childStillAlive) {
         try { process.kill(parseInt(childPid, 10), 'SIGKILL'); } catch {}
       }
@@ -1058,7 +1068,7 @@ exit 0
 describe('Security Audit Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T-P6-7, T-P6-9)', () => {
   it('redacts multi-line PEM blocks without swallowing subsequent lines (C7-7)', () => {
     assert.ok(!REDACT_SED.includes('/c\\\\'), 'REDACT_SED must not use non-portable c\\ sed command');
-    assert.ok(REDACT_SED.includes('/^[A-Za-z0-9+\\/=]{16,}/d'), 'REDACT_SED must use non-swallowing base64 deletion pattern');
+    assert.ok(REDACT_SED.includes('/^[[:space:]]*[A-Za-z0-9+\\/=]+[[:space:]]*$/d'), 'REDACT_SED must use non-swallowing base64 deletion pattern');
 
     const input = 'Header info\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----\nImportant trailing log line\n';
     const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });

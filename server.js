@@ -44,6 +44,8 @@ server.tool(
     'INSTRUCTION: Call claude_models first to discover supported models before calling this tool.',
     'Supports EnMaaS AI Gateway (free GLM 5.3) and GCP Vertex AI (canonical sonnet, opus, claude-sonnet-5, claude-opus-4-8) with shared-quota bypass and tertiary fallback.',
     'Returns JSON { command, cwd, description, block_until_ms } for agent shell execution.',
+    'Progress and session header (⚡ model | session) stream on stdout in single-tier mode and on stderr during failover',
+    '(leaving stdout to banners, assistant text, and errors); drain stderr concurrently.',
   ].join(' '),
   {
     prompt: z.string().describe('The prompt to send to Claude'),
@@ -64,6 +66,8 @@ server.tool(
     systemPrompt: z.string().optional().describe('System prompt override (--system-prompt).'),
     sessionId: z.string().optional().describe('Resume a previous session by ID'),
     cwd: z.string().optional().describe('Working directory for Claude CLI'),
+    enableHooks: z.boolean().optional().describe('Allow user/project hooks in headless run (default: false).'),
+    enableMcp: z.boolean().optional().describe('Allow user/project MCP servers in headless run (default: false).'),
   },
   async (params) => buildCommand({
     ...params,

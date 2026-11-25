@@ -1,5 +1,5 @@
 // claude-mcp-server/command-builder.js
-// @ai-rules: [Pattern]: Pure logic — exports shellQuote + buildCommand. [Constraint]: Zero I/O or MCP SDK, <= 100 lines.
+// @ai-rules: [Pattern]: Pure logic — exports shellQuote + buildCommand; defaults --strict-mcp-config & disableAllHooks:true. [Constraint]: Node built-ins only, <= 100 lines.
 
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -7,16 +7,14 @@ import { dirname, join } from 'node:path';
 import { MODES, MODE_NAMES, getModeDefaultModel } from './modes.js';
 import { resolveProvider, buildProviderEnv, supportsEffort, normalizeVertexModel, buildVertexSettings } from './providers.js';
 import { resolveFailoverConfig, resolveSecondaryModel, buildFailoverScript } from './failover.js';
-import { REDACT_SED } from './failover-scripts.js';
+import { REDACT_SED, quote } from './failover-scripts.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const FORMATTER_PATH = join(__dirname, 'stream-format.js');
 export { MODE_NAMES };
 export const MAX_PROMPT_BYTES = 100_000;
 
-export function shellQuote(s) {
-  return typeof s !== 'string' ? "''" : "'" + s.replace(/'/g, "'\\''") + "'";
-}
+export const shellQuote = (s) => quote(s);
 
 export function buildCommand(params, env = process.env) {
   const modeConfig = params.mode ? MODES[params.mode] : null;
@@ -42,11 +40,14 @@ export function buildCommand(params, env = process.env) {
   if (appendPrompt) shared.push('--append-system-prompt', shellQuote(appendPrompt));
   if (params.sessionId) shared.push('--resume', shellQuote(params.sessionId));
 
+  const hookOn = params.enableHooks === true;
   const makeTierArgs = (m, e, s) => {
+    const effS = hookOn ? s : { ...(s || {}), disableAllHooks: true };
     const a = [shellQuote(bin), '--print', '--output-format', 'stream-json', '--verbose'];
+    if (params.enableMcp !== true) a.push('--strict-mcp-config');
     if (m) a.push('--model', shellQuote(m));
     if (e) a.push('--effort', shellQuote(e));
-    if (s) a.push('--settings', shellQuote(JSON.stringify(s)));
+    if (effS) a.push('--settings', shellQuote(JSON.stringify(effS)));
     a.push(...shared);
     return a;
   };
@@ -81,7 +82,8 @@ export function buildCommand(params, env = process.env) {
       model: resolvedModel, prompt: params.prompt, sysPrompt: params.systemPrompt, fmt, ...failoverConfig,
     }));
   } else {
-    commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | { ${REDACT_SED} || cat; } >&2; } 3>&1 | node ${fmt}; }`, params.prompt, delim);
+    const errDrain = `{ ${REDACT_SED} || { cat >/dev/null; printf '[claude-mcp] redaction unavailable\\n'; }; } >&2`;
+    commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | ${errDrain}; } 3>&1 | CLAUDE_PROGRESS_FD= node ${fmt}; }`, params.prompt, delim);
   }
 
   commandLines.push(`_elapsed=$(( $(date +%s) - _start ))`, `printf '\\033[1;${c}m└─ DONE │ %ss ─┘\\033[0m\\n' "$_elapsed"`);
