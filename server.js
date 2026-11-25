@@ -64,6 +64,8 @@ server.tool(
     systemPrompt: z.string().optional().describe('System prompt override (--system-prompt).'),
     sessionId: z.string().optional().describe('Resume a previous session by ID'),
     cwd: z.string().optional().describe('Working directory for Claude CLI'),
+    enableHooks: z.boolean().optional().describe('Allow user/project hooks in headless run (default: false).'),
+    enableMcp: z.boolean().optional().describe('Allow user/project MCP servers in headless run (default: false).'),
   },
   async (params) => buildCommand({
     ...params,

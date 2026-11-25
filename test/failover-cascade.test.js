@@ -3,12 +3,13 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { resolveFailoverConfig } from '../failover.js';
+import { resolveFailoverConfig, buildFailoverScript } from '../failover.js';
 import { buildCommand, FORMATTER_PATH } from '../command-builder.js';
+import { REDACT_SED, quote } from '../failover-scripts.js';
 import { resolveGcpProjects } from '../providers.js';
 import { createEnvScrubber } from './helpers/env.js';
 
@@ -107,7 +108,7 @@ describe('ATDD Layer 1 & 2: 3-Tier Cascade Script Generation & Isolation (comman
       'Tier 2 subshell must export GOOGLE_APPLICATION_CREDENTIALS for Tier 2',
     );
     assert.ok(
-      cmd.includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-1","CLOUDSDK_CORE_PROJECT":"vertex-project-1","GOOGLE_APPLICATION_CREDENTIALS":"/creds/tier2.json"}}\''),
+      cmd.includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-1","CLOUDSDK_CORE_PROJECT":"vertex-project-1","GOOGLE_APPLICATION_CREDENTIALS":"/creds/tier2.json"},"disableAllHooks":true}\''),
       'Tier 2 command must pass --settings JSON overriding project and credentials',
     );
 
@@ -127,7 +128,7 @@ describe('ATDD Layer 1 & 2: 3-Tier Cascade Script Generation & Isolation (comman
       'Tier 3 subshell must export GOOGLE_APPLICATION_CREDENTIALS for Tier 3',
     );
     assert.ok(
-      cmd.includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-2","CLOUDSDK_CORE_PROJECT":"vertex-project-2","GOOGLE_APPLICATION_CREDENTIALS":"/creds/tier3.json"}}\''),
+      cmd.includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-2","CLOUDSDK_CORE_PROJECT":"vertex-project-2","GOOGLE_APPLICATION_CREDENTIALS":"/creds/tier3.json"},"disableAllHooks":true}\''),
       'Tier 3 command must pass --settings JSON overriding project and credentials',
     );
   });
@@ -882,5 +883,387 @@ fi
     }).toString();
 
     assert.ok(out.includes('creds=UNSET'), 'Tier 2 subshell must have GOOGLE_APPLICATION_CREDENTIALS unset, not inherited from ambient env');
+  });
+});
+
+describe('ATDD Layer 3: Live FD 3 Streaming, Redaction Resilience & FD Isolation (T-S1, T-S2, T-S3, T-S6)', () => {
+  let tmpDir;
+  let mockClaudeBin;
+  let behaviorFile;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-test-stream-'));
+    mockClaudeBin = path.join(tmpDir, 'mock-claude.sh');
+    behaviorFile = path.join(tmpDir, 'behavior.txt');
+
+    const stubScript = `#!/bin/bash
+ACTION=$(head -n 1 "$MOCK_BEHAVIOR_FILE")
+tail -n +2 "$MOCK_BEHAVIOR_FILE" > "$MOCK_BEHAVIOR_FILE.tmp" 2>/dev/null && mv "$MOCK_BEHAVIOR_FILE.tmp" "$MOCK_BEHAVIOR_FILE"
+case "$ACTION" in
+  FIXTURE_*)
+    FIX_FILE="${tmpDir}/$ACTION.jsonl"
+    EXIT_CODE=$(head -n 1 "$FIX_FILE")
+    tail -n +2 "$FIX_FILE"
+    exit "$EXIT_CODE"
+    ;;
+  BG_SLEEP_SUCCESS)
+    sleep 10 >/dev/null 2>&1 &
+    printf '%s\n' '{"type":"system","subtype":"init","model":"sonnet","session_id":"s-bg"}'
+    printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"CHILD_FD3_ISOLATED\\n"}]}}'
+    exit 0
+    ;;
+  LARGE_STDERR_429)
+    cat "${tmpDir}/large-429.err" >&2
+    printf '%s\n' '{"type":"error","error":{"message":"API Error: 429 quota"}}'
+    exit 1
+    ;;
+  *)
+    echo "UNKNOWN_ACTION: $ACTION" >&2
+    exit 1
+    ;;
+esac
+`;
+    fs.writeFileSync(mockClaudeBin, stubScript, { mode: 0o755 });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const writeFixture = (name, exitCode, events) => {
+    fs.writeFileSync(path.join(tmpDir, `${name}.jsonl`), `${exitCode}\n${events.join('\n')}\n`);
+  };
+
+  it('T-S1: live FD 3 redacted progress streaming, tier stdout isolation, and standalone REDACT_SED unclosed-quote checks', () => {
+    writeFixture('FIXTURE_T1', 1, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p1', session_id: 's1' }),
+      JSON.stringify({ type: 'result', is_error: true, result: 'API Error: 400 constraints/vertexai.allowedModels violated' }),
+    ]);
+    writeFixture('FIXTURE_T2', 0, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p2', session_id: 's2' }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            name: 'Bash',
+            input: { command: 'export ENMAAS_KEY="secret-abc\ncurl -H \'Authorization: Bearer super-secret-xyz\' https://example.com' },
+          }],
+        },
+      }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'CLEAN_TIER2_FINAL_ANSWER\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_T1\nFIXTURE_T2\n');
+
+    const res = buildCommand({
+      prompt: 'test live fd3 progress',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'vertex-p1',
+      secondaryProject: 'vertex-p2',
+    }, { CLAUDE_BIN: mockClaudeBin });
+    const { command } = JSON.parse(res.content[0].text);
+
+    const run = spawnSync('bash', {
+      input: command,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.equal(run.status, 0, `Expected exit 0, got ${run.status}; stderr=${run.stderr}`);
+    assert.ok(run.stderr.includes('⚡ model:'), 'stderr must include live init progress');
+    assert.ok(run.stderr.includes('⏵ Bash'), 'stderr must include live tool_use progress');
+    assert.ok(run.stderr.includes('[REDACTED]'), 'stderr must redact secrets in progress stream');
+    assert.ok(!run.stderr.includes('secret-abc'), 'stderr must not leak unclosed-quote ENMAAS_KEY value');
+    assert.ok(!run.stderr.includes('super-secret-xyz'), 'stderr must not leak Bearer token');
+    assert.ok(run.stdout.includes('CLEAN_TIER2_FINAL_ANSWER'), 'stdout must contain Tier 2 final answer');
+    assert.ok(!run.stdout.includes('allowedModels'), 'Tier 1 error must not leak into stdout');
+    assert.ok(!run.stderr.includes('allowedModels'), 'Tier 1 error must not leak into live stderr progress');
+    assert.ok(!run.stdout.includes('⏵'), 'tool_use progress must not leak into stdout');
+    assert.ok(!run.stdout.includes('⚡'), 'init progress must not leak into stdout');
+
+    for (const [label, input, secret] of [
+      ['unclosed ENMAAS_KEY quote', 'ENMAAS_KEY="secret-abc\n', 'secret-abc'],
+      ['unclosed Cookie header quote', 'Cookie: session="tok-xyz\n', 'tok-xyz'],
+      ['unclosed JSON cookie quote', '"cookie": "tok-xyz\n', 'tok-xyz'],
+    ]) {
+      const out = execSync(REDACT_SED, { input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+      assert.ok(out.includes('[REDACTED]'), `${label}: REDACT_SED must emit [REDACTED]`);
+      assert.ok(!out.includes(secret), `${label}: REDACT_SED must not leak ${secret}`);
+    }
+  });
+
+  it('T-S2: non-truncating redact preserves late-offset errors past char 120 for _veto and _grep cascade', () => {
+    // Case A (_veto): >150-char result (is_error: true) with Bearer leak near start + 400 invalid_request_error after char 130
+    const pad = 'x'.repeat(135);
+    writeFixture('FIXTURE_LATE_VETO', 1, [
+      JSON.stringify({ type: 'result', is_error: true, result: `Bearer leak-999 ${pad} 400 invalid_request_error` }),
+    ]);
+    writeFixture('FIXTURE_SHOULD_NOT_RUN', 0, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'SUCCESS_SHOULD_NOT_RUN\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_LATE_VETO\nFIXTURE_SHOULD_NOT_RUN\n');
+
+    const vetoRes = buildCommand({
+      prompt: 'test late veto',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'vertex-p1',
+      secondaryProject: 'vertex-p2',
+    }, { CLAUDE_BIN: mockClaudeBin });
+    const vetoCmd = JSON.parse(vetoRes.content[0].text).command;
+    const vetoRun = spawnSync('bash', {
+      input: vetoCmd,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.notEqual(vetoRun.status, 0, 'Late-offset 400 invalid_request_error must abort non-zero via _veto');
+    assert.ok(vetoRun.stdout.includes('[REDACTED]'), 'stdout must contain [REDACTED] for Bearer token');
+    assert.ok(!vetoRun.stdout.includes('leak-999') && !vetoRun.stderr.includes('leak-999'), 'must not leak Bearer token on stdout or stderr');
+    assert.ok(
+      fs.readFileSync(behaviorFile, 'utf8').includes('FIXTURE_SHOULD_NOT_RUN'),
+      'Tier 2 must not be invoked when late-offset 400 invalid_request_error triggers _veto'
+    );
+
+    // Case B (_grep cascade): >150-char error event with Bearer leak near start + 429 Too Many Requests after char 130
+    writeFixture('FIXTURE_LATE_429', 1, [
+      JSON.stringify({ type: 'error', error: { message: `Bearer leak-888 ${'y'.repeat(135)} 429 Too Many Requests` } }),
+    ]);
+    writeFixture('FIXTURE_T2_OK', 0, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'CASCADE_LATE_429_OK\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_LATE_429\nFIXTURE_T2_OK\n');
+
+    const cascRes = buildCommand({
+      prompt: 'test late 429 cascade',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'vertex-p1',
+      secondaryProject: 'vertex-p2',
+    }, { CLAUDE_BIN: mockClaudeBin });
+    const cascCmd = JSON.parse(cascRes.content[0].text).command;
+    const cascRun = spawnSync('bash', {
+      input: cascCmd,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.equal(cascRun.status, 0, `Expected exit 0 on late 429 cascade, got ${cascRun.status}; stderr=${cascRun.stderr}`);
+    assert.ok(cascRun.stdout.includes('CASCADE_LATE_429_OK'), 'stdout must include Tier 2 success after late-offset 429');
+    assert.ok(!cascRun.stderr.includes('leak-888'), 'stderr must not leak Bearer token from Tier 1 error');
+  });
+
+  it('T-S3: broken sed on PATH does not crash failover pipeline or leak Bearer secrets', () => {
+    const brokenSedDir = path.join(tmpDir, 'broken-sed');
+    fs.mkdirSync(brokenSedDir, { recursive: true });
+    fs.writeFileSync(path.join(brokenSedDir, 'sed'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+    writeFixture('FIXTURE_429', 1, [
+      JSON.stringify({ type: 'error', error: { message: 'API Error: 429 Too Many Requests' } }),
+    ]);
+    writeFixture('FIXTURE_T2_SED_DOWN', 0, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p2', session_id: 's-sed' }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            name: 'Bash',
+            input: { command: 'curl -H "Authorization: Bearer secret-sed-down" https://example.com' },
+          }],
+        },
+      }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'SURVIVED_BROKEN_SED\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_429\nFIXTURE_T2_SED_DOWN\n');
+
+    const res = buildCommand({
+      prompt: 'test broken sed resilience',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'vertex-p1',
+      secondaryProject: 'vertex-p2',
+    }, { CLAUDE_BIN: mockClaudeBin });
+    const { command } = JSON.parse(res.content[0].text);
+
+    const run = spawnSync('bash', {
+      input: command,
+      env: {
+        ...process.env,
+        PATH: `${brokenSedDir}:${process.env.PATH}`,
+        MOCK_BEHAVIOR_FILE: behaviorFile,
+        XDG_RUNTIME_DIR: tmpDir,
+      },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.equal(run.status, 0, `Expected exit 0 with broken sed, got ${run.status}; stderr=${run.stderr}`);
+    assert.ok(run.stdout.includes('SURVIVED_BROKEN_SED'), 'stdout must include SURVIVED_BROKEN_SED');
+    assert.ok(run.stderr.includes('⚡'), 'stderr must include ⚡ progress indicator');
+    assert.ok(run.stderr.includes('[REDACTED]'), 'stderr must include [REDACTED] even when sed exits 1');
+    assert.ok(!run.stderr.includes('secret-sed-down'), 'stderr must not leak secret-sed-down when sed fails');
+  });
+
+  it('T-S6: closes FD 3 for background children (3>&-) and handles closed FD 3 EPIPE without leaking progress to stdout', () => {
+    const res = buildCommand({
+      prompt: 'test fd3 closure',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'vertex-p1',
+      secondaryProject: 'vertex-p2',
+    }, { CLAUDE_BIN: mockClaudeBin });
+    const { command } = JSON.parse(res.content[0].text);
+
+    assert.ok(
+      command.includes('3>&- | CLAUDE_PROGRESS_FD=3 node'),
+      'Failover command must close FD 3 on claude child and pass CLAUDE_PROGRESS_FD=3 to formatter'
+    );
+
+    fs.writeFileSync(behaviorFile, 'BG_SLEEP_SUCCESS\n');
+    const t0 = Date.now();
+    const bgRun = spawnSync('bash', {
+      input: command,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    const elapsed = Date.now() - t0;
+
+    assert.equal(bgRun.status, 0, `Expected exit 0, got ${bgRun.status}; stderr=${bgRun.stderr}`);
+    assert.ok(bgRun.stdout.includes('CHILD_FD3_ISOLATED'), 'stdout must include CHILD_FD3_ISOLATED');
+    assert.ok(elapsed < 2000, `Background child must not hold FD 3 open (elapsed ${elapsed}ms)`);
+
+    // Closed-FD 3 / EPIPE non-leak tests directly on stream-format.js
+    const events = [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'sonnet', session_id: 's-epipe' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/tmp/foo.js' } }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'CLEAN_STDOUT_AFTER_EPIPE\n' }] } }),
+    ].join('\n');
+
+    const epipePipeScript = '{ printf \'%s\\n\' "$EVENTS" | CLAUDE_PROGRESS_FD=3 node "$FORMATTER_PATH" 3>&1 1>&4 4>&- | : ; } 4>&1';
+    const epipeClosedScript = 'printf \'%s\\n\' "$EVENTS" | CLAUDE_PROGRESS_FD=3 node "$FORMATTER_PATH" 3>&-';
+
+    for (const [label, script] of [['EPIPE closed pipe reader', epipePipeScript], ['closed FD 3 (3>&-)', epipeClosedScript]]) {
+      const r = spawnSync('bash', ['-c', script], {
+        env: { ...process.env, EVENTS: events, FORMATTER_PATH },
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(r.status, 0, `${label}: expected exit 0, got ${r.status}; stderr=${r.stderr}`);
+      assert.ok(r.stdout.includes('CLEAN_STDOUT_AFTER_EPIPE'), `${label}: stdout must contain assistant text`);
+      assert.ok(!r.stdout.includes('⏵'), `${label}: tool_use progress must not leak to stdout`);
+      assert.ok(!r.stdout.includes('⚡'), `${label}: init progress must not leak to stdout`);
+    }
+  });
+
+  it('CR-R2: fatal failure emits terminal API error once on stdout without duplicating into FD 3 stderr', () => {
+    writeFixture('FIXTURE_FATAL_400', 1, [
+      JSON.stringify({ type: 'error', error: { message: 'API Error: 400 invalid_request_error' } }),
+    ]);
+    writeFixture('FIXTURE_SHOULD_NOT_RUN', 0, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'SHOULD_NOT_RUN\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_FATAL_400\nFIXTURE_SHOULD_NOT_RUN\n');
+
+    const res = buildCommand({
+      prompt: 'test fatal single error',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'vertex-p1',
+      secondaryProject: 'vertex-p2',
+    }, { CLAUDE_BIN: mockClaudeBin });
+    const { command } = JSON.parse(res.content[0].text);
+
+    const run = spawnSync('bash', {
+      input: command,
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.equal(run.status, 1, `Expected exit 1 on fatal _veto, got ${run.status}`);
+    assert.equal(
+      (run.stdout.match(/invalid_request_error/g) || []).length,
+      1,
+      `Terminal API error must appear exactly once on stdout, got stdout=${run.stdout}`
+    );
+    assert.ok(!run.stderr.includes('invalid_request_error'), 'Terminal API error must not duplicate into FD 3 stderr');
+  });
+
+  it('CR-C4-F2: _grep does not fail with SIGPIPE 141 when 429 matches early in >500KB stderr log alongside non-empty $_last_o', () => {
+    const largeErr = 'HTTP 429 Too Many Requests\n' + 'padding line for pipe buffer overflow\n'.repeat(15000);
+    fs.writeFileSync(path.join(tmpDir, 'large-429.err'), largeErr);
+    writeFixture('FIXTURE_RESUMED_OK', 0, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'RESUMED_OK\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'LARGE_STDERR_429\nFIXTURE_RESUMED_OK\n');
+
+    const script = buildFailoverScript({
+      type: 'vertex',
+      primaryProject: 'vertex-p1',
+      secondaryProject: 'vertex-p2',
+      primaryArgs: [quote(mockClaudeBin)],
+      secondaryArgs: [quote(mockClaudeBin)],
+      delim: '__PROMPT_SIGPIPE__',
+      prompt: 'test sigpipe',
+      fmt: quote(FORMATTER_PATH),
+    });
+
+    const run = spawnSync('bash', ['-c', 'set -eo pipefail; ' + script], {
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.equal(run.status, 0, `Expected exit 0 without SIGPIPE 141 in _grep, got ${run.status}; stderr=${run.stderr.slice(0, 200)}`);
+    assert.ok(run.stdout.includes('RESUMED_OK'), 'Tier 2 must execute and emit RESUMED_OK');
+  });
+
+  it('CR-C6-1: stream-format.js redacts secrets and strips control sequences on non-JSON passthrough lines', () => {
+    const input = 'FATAL ANTHROPIC_API_KEY=sk-ant-secret-123 authorization: Bearer leaky-tok\x1b[2J\n';
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.CLAUDE_PROGRESS_FD;
+    const run = spawnSync('node', [FORMATTER_PATH], {
+      input,
+      env: cleanEnv,
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.equal(run.status, 0, `stream-format.js exited ${run.status}: ${run.stderr}`);
+    assert.ok(run.stdout.includes('[REDACTED]'), 'Non-JSON passthrough line must redact secrets');
+    assert.ok(!run.stdout.includes('sk-ant-secret-123'), 'Non-JSON passthrough must not leak API key');
+    assert.ok(!run.stdout.includes('leaky-tok'), 'Non-JSON passthrough must not leak Bearer token');
+    assert.ok(!run.stdout.includes('\x1b[2J'), 'Non-JSON passthrough must strip ANSI control sequences');
+  });
+
+  it('CR-R1-parity: stream-format.js redacts response=<secret> inside tool_use command hints matching REDACT_SED', () => {
+    const input = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [{
+          type: 'tool_use',
+          name: 'Bash',
+          input: { command: 'echo response=supersecret123' },
+        }],
+      },
+    }) + '\n';
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.CLAUDE_PROGRESS_FD;
+    const run = spawnSync('node', [FORMATTER_PATH], {
+      input,
+      env: cleanEnv,
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+
+    assert.equal(run.status, 0, `stream-format.js exited ${run.status}: ${run.stderr}`);
+    assert.ok(run.stdout.includes('response=[REDACTED]'), `Must redact response=<secret>, got: ${run.stdout}`);
+    assert.ok(!run.stdout.includes('supersecret123'), 'Must not leak response secret');
   });
 });

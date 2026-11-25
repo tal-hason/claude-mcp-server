@@ -7,12 +7,12 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { shellQuote, buildCommand } from '../command-builder.js';
+import { shellQuote, buildCommand, FORMATTER_PATH } from '../command-builder.js';
 import { createEnvScrubber } from './helpers/env.js';
 
 const scrubber = createEnvScrubber();
@@ -582,7 +582,7 @@ describe('buildCommand - EnMaaS gateway routing and effort suppression', () => {
     const result = buildCommand({ provider: 'enmaas', prompt: 'test' });
     const parsed = JSON.parse(result.content[0].text);
     assert.ok(
-      parsed.command.includes("--settings '{\"env\":{\"CLAUDE_CODE_USE_VERTEX\":\"\"}}'"),
+      parsed.command.includes("--settings '{\"env\":{\"CLAUDE_CODE_USE_VERTEX\":\"\"},\"disableAllHooks\":true}'"),
       'Command should serialize settings JSON CLI token correctly'
     );
   });
@@ -725,6 +725,185 @@ describe('Bash syntax validation and setup.sh --configure CLI verification', () 
   });
 });
 
+// === P. Streaming Progress, Headless Isolation & Fitness Gates (T-S2, T-S4, T-S5, T-S8) ===
+
+describe('Streaming Progress, Headless Isolation & Fitness Gates (T-S2, T-S4, T-S5, T-S8)', () => {
+  it('T-S2: non-failover command clears CLAUDE_PROGRESS_FD and stream-format.js formats/redacts when FD unset', () => {
+    const res = buildCommand({ prompt: 'hi' });
+    const { command } = JSON.parse(res.content[0].text);
+    assert.ok(command.includes('CLAUDE_PROGRESS_FD= node'), 'Non-failover command must clear CLAUDE_PROGRESS_FD before node formatter');
+    assert.ok(!command.includes('CLAUDE_PROGRESS_FD=3'), 'Non-failover command must not set CLAUDE_PROGRESS_FD=3');
+
+    const events = [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'sonnet', session_id: 's-nf' }),
+      JSON.stringify({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 3 }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'tool_use',
+            name: 'Bash',
+            input: { command: "curl -H 'Authorization: Bearer tok-12345' https://api.example.com" },
+          }],
+        },
+      }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Turn1' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Turn2' }] } }),
+    ].join('\n') + '\n';
+
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.CLAUDE_PROGRESS_FD;
+    const fmtRes = spawnSync('node', [FORMATTER_PATH], { input: events, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+    assert.equal(fmtRes.status, 0, `stream-format.js exited ${fmtRes.status}: ${fmtRes.stderr}`);
+    assert.ok(fmtRes.stdout.includes('⚡'), 'Must emit init ⚡ progress');
+    assert.ok(fmtRes.stdout.includes('↻ retry 1/3'), 'Must emit api_retry indicator');
+    assert.ok(fmtRes.stdout.includes('⏵'), 'Must emit tool_use ⏵ progress');
+    assert.ok(fmtRes.stdout.includes('[REDACTED]'), 'Must redact Bearer token in progress output');
+    assert.ok(!fmtRes.stdout.includes('tok-12345'), 'Must not leak Bearer token');
+    assert.ok(fmtRes.stdout.includes('Turn1\nTurn2'), 'Must insert newline between adjacent assistant text turns');
+  });
+
+  it('T-S4: default headless isolation injects --strict-mcp-config and disableAllHooks across single, 2-tier, and 3-tier commands', () => {
+    const single = JSON.parse(buildCommand({ prompt: 'test' }).content[0].text).command;
+    assert.ok(single.includes('--strict-mcp-config'), 'Single-tier Vertex must include --strict-mcp-config');
+    assert.ok(single.includes('--settings \'{"disableAllHooks":true}\''), 'Single-tier Vertex must emit --settings with disableAllHooks:true');
+
+    const twoTier = JSON.parse(buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'vertex-p2',
+      prompt: 'test',
+    }, { ENMAAS_KEY: 'test-key' }).content[0].text).command;
+    const p2Match = twoTier.match(/_run_primary\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_secondary/);
+    const s2Match = twoTier.match(/_run_secondary\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
+    assert.ok(p2Match && s2Match, '2-tier command must contain _run_primary and _run_secondary');
+    for (const [label, body] of [['2-tier primary', p2Match[1]], ['2-tier secondary', s2Match[1]]]) {
+      assert.ok(body.includes('--strict-mcp-config'), `${label} must include --strict-mcp-config`);
+      assert.ok(body.includes('"disableAllHooks":true'), `${label} must include "disableAllHooks":true`);
+    }
+
+    const threeTier = JSON.parse(buildCommand({
+      provider: 'enmaas',
+      secondaryProject: 'vertex-p2',
+      tertiaryProject: 'vertex-p3',
+      prompt: 'test',
+    }, { ENMAAS_KEY: 'test-key' }).content[0].text).command;
+    const t1Match = threeTier.match(/_run_tier1\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_tier2/);
+    const t2Match = threeTier.match(/_run_tier2\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_tier3/);
+    const t3Match = threeTier.match(/_run_tier3\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
+    assert.ok(t1Match && t2Match && t3Match, '3-tier command must contain _run_tier1, _run_tier2, and _run_tier3');
+    for (const [label, body] of [['tier1', t1Match[1]], ['tier2', t2Match[1]], ['tier3', t3Match[1]]]) {
+      assert.ok(body.includes('--strict-mcp-config'), `${label} must include --strict-mcp-config`);
+      assert.ok(body.includes('"disableAllHooks":true'), `${label} must include "disableAllHooks":true`);
+    }
+  });
+
+  it('T-S5: enableMcp/enableHooks boolean opt-outs, non-boolean strict guard, and server.js tools/list schema', () => {
+    const optOutMcp = JSON.parse(buildCommand({ prompt: 'test', enableMcp: true }).content[0].text).command;
+    assert.ok(!optOutMcp.includes('--strict-mcp-config'), 'enableMcp: true must omit --strict-mcp-config');
+
+    const optOutHooksPlain = JSON.parse(buildCommand({ prompt: 'test', enableHooks: true }).content[0].text).command;
+    assert.ok(!optOutHooksPlain.includes('disableAllHooks'), 'enableHooks: true must omit disableAllHooks');
+    assert.ok(!optOutHooksPlain.includes('--settings'), 'enableHooks: true on plain Vertex must omit --settings completely');
+
+    const optOutHooksEnmaas = JSON.parse(buildCommand({ provider: 'enmaas', prompt: 'test', enableHooks: true }).content[0].text).command;
+    assert.ok(!optOutHooksEnmaas.includes('disableAllHooks'), 'enableHooks: true on EnMaaS must omit disableAllHooks');
+    assert.ok(
+      optOutHooksEnmaas.includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":""}}\''),
+      'enableHooks: true on EnMaaS must preserve env-only --settings'
+    );
+
+    const nonBool = JSON.parse(buildCommand({ prompt: 'test', enableMcp: 'true', enableHooks: 1 }).content[0].text).command;
+    assert.ok(nonBool.includes('--strict-mcp-config'), 'Non-boolean enableMcp: "true" must enforce --strict-mcp-config');
+    assert.ok(nonBool.includes('"disableAllHooks":true'), 'Non-boolean enableHooks: 1 must enforce "disableAllHooks":true');
+
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    const serverJsPath = path.resolve(__dirname, '../server.js');
+    const rpcInput = [
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'atdd', version: '1.0.0' } },
+      }),
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+    ].join('\n') + '\n';
+
+    const srv = spawnSync('node', [serverJsPath], { input: rpcInput, encoding: 'utf8', timeout: 5000 });
+    assert.equal(srv.status, 0, `server.js exited ${srv.status}: ${srv.stderr}`);
+    const listResp = srv.stdout
+      .trim()
+      .split('\n')
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .find((m) => m && m.id === 2);
+    assert.ok(listResp?.result?.tools, 'tools/list response (id: 2) must be returned');
+    const promptTool = listResp.result.tools.find((t) => t.name === 'claude_prompt');
+    assert.ok(promptTool, 'claude_prompt tool must be registered');
+    assert.equal(promptTool.inputSchema?.properties?.enableHooks?.type, 'boolean', 'enableHooks schema type must be boolean');
+    assert.equal(promptTool.inputSchema?.properties?.enableMcp?.type, 'boolean', 'enableMcp schema type must be boolean');
+  });
+
+  it('T-S8: line-budget fitness (<=100 lines), node --check, bash -n, and tracked-file path hygiene', () => {
+    const __dirname = path.dirname(fileURLToPath(import.meta.url));
+    const rootDir = path.resolve(__dirname, '..');
+    const rootJsFiles = [
+      'server.js',
+      'command-builder.js',
+      'failover.js',
+      'failover-scripts.js',
+      'models.js',
+      'modes.js',
+      'providers.js',
+      'stream-format.js',
+    ];
+
+    for (const file of rootJsFiles) {
+      const fullPath = path.join(rootDir, file);
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const lineCount = content.replace(/\n$/, '').split('\n').length;
+      assert.ok(lineCount <= 100, `${file} must be <= 100 lines (got ${lineCount})`);
+      assert.doesNotThrow(() => {
+        execSync(`node --check "${fullPath}"`, { stdio: 'pipe' });
+      }, `${file} must pass node --check`);
+    }
+
+    for (const shFile of ['setup.sh', 'install.sh']) {
+      const fullPath = path.join(rootDir, shFile);
+      assert.doesNotThrow(() => {
+        execSync(`bash -n "${fullPath}"`, { stdio: 'pipe' });
+      }, `${shFile} must pass bash -n`);
+    }
+
+    const tierCmds = [
+      JSON.parse(buildCommand({ prompt: 'test 1-tier' }).content[0].text).command,
+      JSON.parse(buildCommand({ provider: 'enmaas', secondaryProject: 'p2', prompt: 'test 2-tier' }, { ENMAAS_KEY: 'k' }).content[0].text).command,
+      JSON.parse(buildCommand({ provider: 'enmaas', secondaryProject: 'p2', tertiaryProject: 'p3', prompt: 'test 3-tier' }, { ENMAAS_KEY: 'k' }).content[0].text).command,
+    ];
+    for (const [idx, cmd] of tierCmds.entries()) {
+      assert.doesNotThrow(() => {
+        execSync('bash -n', { input: cmd, stdio: ['pipe', 'pipe', 'pipe'] });
+      }, `${idx + 1}-tier generated command must pass bash -n`);
+    }
+
+    const testFiles = fs.readdirSync(path.join(rootDir, 'test'))
+      .filter((f) => f.endsWith('.test.js'))
+      .map((f) => path.join('test', f));
+    const trackedFiles = [
+      ...rootJsFiles,
+      'README.md',
+      path.join('skills', 'claude-dispatch', 'SKILL.md'),
+      'setup.sh',
+      'install.sh',
+      ...testFiles,
+    ];
+    const homePathRe = new RegExp('/' + 'home/[a-z0-9_-]+/', 'i');
+    for (const rel of trackedFiles) {
+      const content = fs.readFileSync(path.join(rootDir, rel), 'utf8');
+      assert.ok(!homePathRe.test(content), `${rel} must not contain hardcoded developer home path`);
+    }
+  });
+});
+
 describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
   it('T-24: resolveFailoverConfig detects cross-provider failover when provider: "enmaas" and secondary project is provided', async () => {
     const { resolveFailoverConfig } = await getFailover();
@@ -810,10 +989,10 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
     const parsed = JSON.parse(result.content[0].text);
     const primaryMatch = parsed.command.match(/_run_primary\s*\(\)\s*\(([^\0]*?)\)\n\s*_run_secondary/);
     const secondaryMatch = parsed.command.match(/_run_secondary\s*\(\)\s*\(([^\0]*?)\)\n\s*if \[ -f/);
-    assert.ok(primaryMatch[1].includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":""}}\''), '_run_primary must include EnMaaS --settings flag');
+    assert.ok(primaryMatch[1].includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":""},"disableAllHooks":true}\''), '_run_primary must include EnMaaS --settings flag');
     assert.ok(!secondaryMatch[1].includes('"CLAUDE_CODE_USE_VERTEX":""'), '_run_secondary must not include EnMaaS empty CLAUDE_CODE_USE_VERTEX setting');
     assert.ok(
-      secondaryMatch[1].includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-2","CLOUDSDK_CORE_PROJECT":"vertex-project-2","GOOGLE_APPLICATION_CREDENTIALS":"/creds/sec.json"}}\''),
+      secondaryMatch[1].includes('--settings \'{"env":{"CLAUDE_CODE_USE_VERTEX":"1","ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-2","CLOUDSDK_CORE_PROJECT":"vertex-project-2","GOOGLE_APPLICATION_CREDENTIALS":"/creds/sec.json"},"disableAllHooks":true}\''),
       '_run_secondary must include Vertex --settings JSON overriding project and credentials'
     );
   });
