@@ -1,15 +1,15 @@
 // claude-mcp-server/failover-scripts.js
-// @ai-rules: [Pattern]: Shell script generation for failover cascades (_p_redact, FD 3/4 pipe swizzle, SIGPIPE-safe _grep). [Constraint]: Pure logic, <= 100 lines.
+// @ai-rules: [Pattern]: Shell script generation for failover cascades (FD 3 non-blocking progress, fail-closed _p_redact, SIGPIPE-safe _grep). [Constraint]: Pure logic, <= 100 lines.
 export const quote = (s) => (typeof s !== 'string' ? "''" : "'" + s.replace(/'/g, "'\\''") + "'");
 export const REDACT_SED = 'sed -E -u ' + [
   "s/-----BEGIN[^\\r\\n]*-----END[^\\r\\n]*/[REDACTED_PEM]/g; /-----BEGIN/,/-----END/{ /-----BEGIN/s/.*/[REDACTED_PEM]/; /-----END/d; /^[A-Za-z0-9+\\/=]{16,}/d; /[Bb]ase64/d; }",
   "s/((\\\\?['\"])?\\b(proxy-)?authorization(\\\\?['\"])?[ \\t]*:[ \\t]*(([a-zA-Z0-9_-]+)[ \\t]+)?|\\b(bearer|token)[ \\t]+)((\\\\?\"[^\"]*(\\\\?\"|$))|('[^']*('|$))|[^[:space:]\"'&]+)/\\1[REDACTED]/gI",
-  "s/(\\bresponse[[:space:]]*=[[:space:]]*)((\\\\?\"[^\"]*\\\\?\")|('([^']*)')|([^[:space:]\"',&]+))/\\1[REDACTED]/gI",
+  "s/(\\bresponse[[:space:]]*=[[:space:]]*)((\\\\?\"[^\"]*(\\\\?\"|$))|('[^']*('|$))|([^[:space:]\"',&]+))/\\1[REDACTED]/gI",
   "s/((\\\\?['\"])?\\b[a-zA-Z0-9_-]{0,128}(key|token|secret|password|credentials|private_key_id)(\\\\?['\"])?[[:space:]]*[=:][[:space:]]*)((\\\\?\"[^\"]*(\\\\?\"|$))|('[^']*('|$))|[^[:space:]\"'&]+)/\\1[REDACTED]/gI",
   "s/(sk-ant-[a-zA-Z0-9_-]{4}|sk-proj-[a-zA-Z0-9_-]{4}|ya29\\.[a-zA-Z0-9_-]{4}|gh[pousr]_[a-zA-Z0-9]{4}|github_pat_[a-zA-Z0-9_]{4}|glpat-[a-zA-Z0-9_-]{4})[a-zA-Z0-9_-]+/\\1[REDACTED]/g",
   "s/(--api[_-]?key([[:space:]]+|=)|[?&](key|api[_-]?key|token)=)[^[:space:]\"'&]+/\\1[REDACTED]/gI; s/(https?:\\/\\/[^[:space:]\\/@:]+):[^[:space:]\\/@]+@/\\1:[REDACTED]@/g",
   "s/ey[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_.-]{10,}/[REDACTED_JWT]/g",
-  "s/([\"']?[Cc]ookie[\"']?[[:space:]]*[:=][[:space:]]*)((\"[^\"]*(\"|$))|('[^']*('|$))|([^[:space:]\\r\\n\"'}]+))/\\1[REDACTED]/gI; s/([Cc]ookie:[[:space:]]*)[^\\r\\n]+/\\1[REDACTED]/gI",
+  "s/((\\\\?[\"'])?[Cc]ookie(\\\\?[\"'])?[[:space:]]*[:=][[:space:]]*)((\\\\?\"[^\"]*(\\\\?\"|$))|('[^']*('|$))|([^[:space:]\\r\\n\"'}]+))/\\1[REDACTED]/gI; s/([Cc]ookie:[[:space:]]*)[^\\r\\n]+/\\1[REDACTED]/gI",
 ].map((e) => '-e ' + quote(e)).join(' ');
 const qp = '(HTTP[[:space:]]+|status[[:space:]]*[:=][[:space:]]*|code[[:space:]]*[:=][[:space:]]*|API[[:space:]]+Error:[[:space:]]*|^|[[:space:]"({])', qs = '([[:space:]")},]|$)';
 const policyPat = 'allowedModels|not[[:space:]]+available[[:space:]]+on[[:space:]]+your[[:space:]]+vertex|model[[:space:]]+is[[:space:]]+not[[:space:]]+authorized|issue[[:space:]]+with[[:space:]]+the[[:space:]]+selected[[:space:]]+model|ENMAAS_KEY.*not[[:space:]]+set';
@@ -30,12 +30,13 @@ const prologue = (delim, prompt, sysPrompt, userRegex = ERROR_PATTERNS.user) => 
    trap '_cleanup 130' INT; trap '_cleanup 143' TERM; trap '_cleanup $?' EXIT
    cat <<'${delim}' > "$_pfile"\n${prompt}\n${delim}
    ${sysPrompt ? `cat <<'${delim}_SP__' > "$_spfile"\n${sysPrompt}\n${delim}_SP__` : ': > "$_spfile"'}
-   _p_redact() { ${REDACT_SED} "$@" 2>/dev/null || cat "$@"; }
-   _redact() { [ -n "$_last_o" ] && [ -f "$_last_o" ] && { _p_redact "$_last_o"; rm -f "$_last_o"; _last_o=; }; [ -f "$_err_log" ] && _p_redact "$_err_log" >&2 || true; }
+   _p_redact() { [ -s "$1" ] || return 0; ${REDACT_SED} "$1" 2>/dev/null || printf '[claude-mcp] redaction unavailable\n'; }
+   _redact() { [ -n "$_last_o" ] && [ -f "$_last_o" ] && { _p_redact "$_last_o"; rm -f "$_last_o"; _last_o=; }; [ -s "$_err_log" ] && _p_redact "$_err_log" >&2 || true; }
+   # >/dev/null avoids grep -q SIGPIPE 141; 3>&2 streams non-blocking FD 3 progress
    _grep() { { cat "$_err_log" 2>/dev/null; [ -n "$_last_o" ] && tail -n 5 "$_last_o" 2>/dev/null; } | grep -Ei "$1" >/dev/null; }
    _veto() { [ "\${1:-0}" -ne 124 ] && [ "\${1:-0}" -ne 137 ] && _grep '${userRegex}' && ! _grep '${ERROR_PATTERNS.policy}'; }
    _run_to() { [ -n "$_last_o" ] && rm -f "$_last_o"; _last_o=; local _o; _o="$(mktemp "$_marker_dir/out.$$.XXXXXX" 2>/dev/null || mktemp "\${TMPDIR:-/tmp}/out.$$.XXXXXX")"; local _r=0
-     local _tc="\$(declare -p _pfile _spfile 2>/dev/null); \$(declare -f "\$1" _run_claude _p_redact 2>/dev/null); set -o pipefail; { \\"\$1\\" 3>&1 1>&4 4>&- | _p_redact >&3 4>&-; } 4>&1"
+     local _tc="\$(declare -p _pfile _spfile 2>/dev/null); \$(declare -f "\$1" _run_claude 2>/dev/null); \\"\$1\\""
      if command -v timeout >/dev/null 2>&1; then timeout --kill-after=10s "\${CLAUDE_TIMEOUT:-1800}" bash -c "\$_tc" bash "$1" 3>&2 >"$_o" 2>"$_err_log" & _tp=$!; wait "$_tp" || _r=$?; _tp=;
      else echo "[claude-mcp] Warning: 'timeout' not found; executing without time limit" >&2; bash -c "\$_tc" bash "$1" 3>&2 >"$_o" 2>"$_err_log" & _tp=$!; wait "$_tp" || _r=$?; _tp=; fi
      if [ "$_r" -eq 0 ]; then cat "$_o"; rm -f "$_o"; else _last_o="$_o"; fi; return "$_r"; }`;

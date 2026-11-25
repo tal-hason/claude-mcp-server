@@ -82,7 +82,7 @@ export function buildCommand(params, env = process.env) {
       model: resolvedModel, prompt: params.prompt, sysPrompt: params.systemPrompt, fmt, ...failoverConfig,
     }));
   } else {
-    commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | { ${REDACT_SED} || cat; } >&2; } 3>&1 | CLAUDE_PROGRESS_FD= node ${fmt}; }`, params.prompt, delim);
+    commandLines.push(`{ { ${envPrefix}${primaryArgs.join(' ')} <<'${delim}' 2>&1 1>&3 | { ${REDACT_SED} || { cat >/dev/null; printf '[claude-mcp] redaction unavailable\\n'; }; } >&2; } 3>&1 | CLAUDE_PROGRESS_FD= node ${fmt}; }`, params.prompt, delim);
   }
 
   commandLines.push(`_elapsed=$(( $(date +%s) - _start ))`, `printf '\\033[1;${c}m└─ DONE │ %ss ─┘\\033[0m\\n' "$_elapsed"`);

@@ -902,6 +902,7 @@ tail -n +2 "$MOCK_BEHAVIOR_FILE" > "$MOCK_BEHAVIOR_FILE.tmp" 2>/dev/null && mv "
 case "$ACTION" in
   FIXTURE_*)
     FIX_FILE="${tmpDir}/$ACTION.jsonl"
+    [ -f "${tmpDir}/$ACTION.err" ] && cat "${tmpDir}/$ACTION.err" >&2
     EXIT_CODE=$(head -n 1 "$FIX_FILE")
     tail -n +2 "$FIX_FILE"
     exit "$EXIT_CODE"
@@ -1079,6 +1080,7 @@ esac
       }),
       JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'SURVIVED_BROKEN_SED\n' }] } }),
     ]);
+    fs.writeFileSync(path.join(tmpDir, 'FIXTURE_T2_SED_DOWN.err'), 'Authorization: Bearer raw-stderr-leak-m2\n');
     fs.writeFileSync(behaviorFile, 'FIXTURE_429\nFIXTURE_T2_SED_DOWN\n');
 
     const res = buildCommand({
@@ -1106,7 +1108,9 @@ esac
     assert.ok(run.stdout.includes('SURVIVED_BROKEN_SED'), 'stdout must include SURVIVED_BROKEN_SED');
     assert.ok(run.stderr.includes('⚡'), 'stderr must include ⚡ progress indicator');
     assert.ok(run.stderr.includes('[REDACTED]'), 'stderr must include [REDACTED] even when sed exits 1');
+    assert.ok(run.stderr.includes('redaction unavailable'), 'stderr must report redaction unavailable on broken sed');
     assert.ok(!run.stderr.includes('secret-sed-down'), 'stderr must not leak secret-sed-down when sed fails');
+    assert.ok(!run.stderr.includes('raw-stderr-leak-m2'), 'stderr must not leak raw-stderr-leak-m2 when sed fails');
   });
 
   it('T-S6: closes FD 3 for background children (3>&-) and handles closed FD 3 EPIPE without leaking progress to stdout', () => {
@@ -1265,5 +1269,246 @@ esac
     assert.equal(run.status, 0, `stream-format.js exited ${run.status}: ${run.stderr}`);
     assert.ok(run.stdout.includes('response=[REDACTED]'), `Must redact response=<secret>, got: ${run.stdout}`);
     assert.ok(!run.stdout.includes('supersecret123'), 'Must not leak response secret');
+  });
+
+  it('DR-M1: unread stderr FIFO backpressure does not block tier completion or trigger false timeout failover', () => {
+    const fifoPath = path.join(tmpDir, 'unread-stderr.fifo');
+    const mk = spawnSync('mkfifo', [fifoPath], { encoding: 'utf8' });
+    assert.equal(mk.status, 0, `mkfifo failed: ${mk.stderr}`);
+
+    const toolEvents = Array.from({ length: 3000 }, (_, i) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `echo step_${i}_padding_for_pipe_buffer` } }] },
+      })
+    );
+    writeFixture('FIXTURE_M1_T1', 0, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p1', session_id: 's-m1' }),
+      ...toolEvents,
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'M1_NO_FALSE_FAILOVER\n' }] } }),
+    ]);
+    writeFixture('FIXTURE_M1_T2', 0, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'SHOULD_NOT_FAILOVER\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_M1_T1\nFIXTURE_M1_T2\n');
+
+    const res = buildCommand({
+      prompt: 'test unread stderr fifo backpressure',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockClaudeBin, CLAUDE_TIMEOUT: '4' });
+    const { command } = JSON.parse(res.content[0].text);
+    const cmdFile = path.join(tmpDir, 'm1-cmd.sh');
+    fs.writeFileSync(cmdFile, command);
+
+    const pyDriver = [
+      'import os, fcntl, subprocess, time, json, sys',
+      'fifo, cmd_file = sys.argv[1], sys.argv[2]',
+      'rfd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)',
+      'wfd = os.open(fifo, os.O_WRONLY)',
+      'with open(cmd_file, "rb") as f: cmd = f.read()',
+      't0 = time.monotonic()',
+      'p = subprocess.Popen(["bash"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=wfd)',
+      'try:',
+      '    out, _ = p.communicate(cmd, timeout=6)',
+      '    rc = p.returncode',
+      'except subprocess.TimeoutExpired:',
+      '    p.kill()',
+      '    out, _ = p.communicate()',
+      '    rc = -1',
+      'elapsed_ms = int((time.monotonic() - t0) * 1000)',
+      'wfd_blocking = (fcntl.fcntl(wfd, fcntl.F_GETFL) & os.O_NONBLOCK) == 0',
+      'os.close(wfd)',
+      'chunks = []',
+      'while True:',
+      '    try:',
+      '        d = os.read(rfd, 65536)',
+      '        if not d: break',
+      '        chunks.append(d)',
+      '    except BlockingIOError:',
+      '        break',
+      'os.close(rfd)',
+      'print(json.dumps({"rc": rc, "elapsed_ms": elapsed_ms, "stdout": out.decode("utf8", "replace"), "fifo": b"".join(chunks).decode("utf8", "replace"), "wfd_blocking": wfd_blocking}))',
+    ].join('\n');
+
+    const drv = spawnSync('python3', ['-c', pyDriver, fifoPath, cmdFile], {
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(drv.status, 0, `python3 FIFO driver failed: ${drv.stderr}`);
+    const result = JSON.parse(drv.stdout);
+    assert.equal(result.rc, 0, `Expected child exit 0, got ${result.rc}; stdout=${result.stdout}`);
+    assert.ok(result.elapsed_ms < 2500, `Expected <2500ms without FIFO deadlock, took ${result.elapsed_ms}ms`);
+    assert.ok(result.stdout.includes('M1_NO_FALSE_FAILOVER'), 'stdout must include M1_NO_FALSE_FAILOVER');
+    assert.ok(!result.stdout.includes('SHOULD_NOT_FAILOVER'), 'Must not trigger false failover to Tier 2');
+    assert.ok(result.fifo.includes('⚡') || result.fifo.includes('⏵'), 'Drained FIFO must contain progress bytes');
+    assert.equal(result.wfd_blocking, true, 'Caller blocking write FD flag must remain blocking');
+  });
+
+  it('DR-M3: parametrized 3>&- FD 3 closure across all 7 tier call sites and no-timeout PATH fallback', () => {
+    writeFixture('FIXTURE_429', 1, [
+      JSON.stringify({ type: 'error', error: { message: 'API Error: 429 Too Many Requests' } }),
+    ]);
+    writeFixture('FIXTURE_503', 1, [
+      JSON.stringify({ type: 'error', error: { message: 'HTTP 503 Service Unavailable' } }),
+    ]);
+
+    const cases = [
+      ['vertex 2-tier primary', { provider: 'vertex', primaryProject: 'p1', secondaryProject: 'p2' }, { CLAUDE_BIN: mockClaudeBin }, 'BG_SLEEP_SUCCESS\n'],
+      ['vertex 2-tier secondary', { provider: 'vertex', primaryProject: 'p1', secondaryProject: 'p2' }, { CLAUDE_BIN: mockClaudeBin }, 'FIXTURE_429\nBG_SLEEP_SUCCESS\n'],
+      ['enmaas 2-tier primary', { provider: 'enmaas', secondaryProject: 'p2' }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockClaudeBin }, 'BG_SLEEP_SUCCESS\n'],
+      ['enmaas 2-tier secondary', { provider: 'enmaas', secondaryProject: 'p2' }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockClaudeBin }, 'FIXTURE_429\nBG_SLEEP_SUCCESS\n'],
+      ['3-tier cascade T1', { provider: 'enmaas', secondaryProject: 'p2', tertiaryProject: 'p3' }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockClaudeBin }, 'BG_SLEEP_SUCCESS\n'],
+      ['3-tier cascade T2', { provider: 'vertex', primaryProject: 'p1', secondaryProject: 'p2', tertiaryProject: 'p3' }, { CLAUDE_BIN: mockClaudeBin }, 'FIXTURE_503\nBG_SLEEP_SUCCESS\n'],
+      ['3-tier cascade T3', { provider: 'enmaas', secondaryProject: 'p2', tertiaryProject: 'p3' }, { ENMAAS_KEY: 'test-key', CLAUDE_BIN: mockClaudeBin }, 'FIXTURE_429\nBG_SLEEP_SUCCESS\n'],
+    ];
+
+    for (const [label, params, buildEnv, behaviors] of cases) {
+      const caseRuntime = fs.mkdtempSync(path.join(tmpDir, 'm3-case-'));
+      fs.writeFileSync(behaviorFile, behaviors);
+      const { command } = JSON.parse(buildCommand({ prompt: label, mode: 'executor', ...params }, buildEnv).content[0].text);
+      const t0 = Date.now();
+      const r = spawnSync('bash', {
+        input: command,
+        env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, ENMAAS_KEY: 'test-key', XDG_RUNTIME_DIR: caseRuntime },
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      const elapsed = Date.now() - t0;
+      assert.equal(r.status, 0, `${label}: expected exit 0, got ${r.status}; stderr=${r.stderr}`);
+      assert.ok(elapsed < 2000, `${label}: background sleep must not hold FD 3 open (elapsed ${elapsed}ms)`);
+      assert.ok(r.stdout.includes('CHILD_FD3_ISOLATED'), `${label}: stdout must include CHILD_FD3_ISOLATED`);
+    }
+
+    // No-timeout PATH branch
+    const noTimeoutBinDir = path.join(tmpDir, 'no-timeout-bin');
+    fs.mkdirSync(noTimeoutBinDir, { recursive: true });
+    const bins = [
+      'bash', 'sh', 'node', 'sed', 'cat', 'rm', 'mktemp', 'mkdir', 'chmod',
+      'find', 'id', 'grep', 'tail', 'touch', 'date', 'printf', 'wc', 'sleep', '[',
+      'head', 'mv',
+    ];
+    for (const bin of bins) {
+      const resolved = spawnSync('which', [bin], { encoding: 'utf8' });
+      if (resolved.status === 0 && resolved.stdout.trim()) {
+        const target = resolved.stdout.trim().split('\n')[0];
+        const linkPath = path.join(noTimeoutBinDir, bin);
+        if (!fs.existsSync(linkPath)) fs.symlinkSync(target, linkPath);
+      }
+    }
+
+    const noToRuntime = fs.mkdtempSync(path.join(tmpDir, 'm3-noto-'));
+    fs.writeFileSync(behaviorFile, 'BG_SLEEP_SUCCESS\n');
+    const { command: noToCmd } = JSON.parse(buildCommand({
+      prompt: 'no timeout branch',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockClaudeBin }).content[0].text);
+
+    const t0 = Date.now();
+    const noToRun = spawnSync(path.join(noTimeoutBinDir, 'bash'), {
+      input: noToCmd,
+      env: { ...process.env, PATH: noTimeoutBinDir, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: noToRuntime },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    const noToElapsed = Date.now() - t0;
+    assert.equal(noToRun.status, 0, `no-timeout branch: expected exit 0, got ${noToRun.status}; stderr=${noToRun.stderr}`);
+    assert.ok(noToElapsed < 2000, `no-timeout branch: background child must not hold FD 3 (elapsed ${noToElapsed}ms)`);
+    assert.ok(noToRun.stderr.includes("Warning: 'timeout' not found"), 'no-timeout branch must warn on stderr');
+    assert.ok(noToRun.stderr.includes('⚡'), 'no-timeout branch must still stream ⚡ progress');
+    assert.ok(noToRun.stdout.includes('CHILD_FD3_ISOLATED'), 'no-timeout branch stdout must include CHILD_FD3_ISOLATED');
+  });
+
+  it('DR-M4: shared-corpus redaction parity across REDACT_SED & stream-format.js plus L-2/L-3/L-4 edge cases', () => {
+    const corpus = [
+      ['escaped digest response', 'Digest username="alice", response=\\"deadbeef987654\\"', ['deadbeef987654']],
+      ['unclosed digest response', 'Digest username="alice", response="unclosed-resp-secret', ['unclosed-resp-secret']],
+      ['unclosed key', 'ENMAAS_KEY="unclosed-key-secret', ['unclosed-key-secret']],
+      ['unclosed cookie', '"cookie": "unclosed-cookie-secret', ['unclosed-cookie-secret']],
+      ['escaped cookie', '\\"cookie\\": \\"escaped-cookie-secret\\"', ['escaped-cookie-secret']],
+      ['authorization bearer', 'Authorization: Bearer bearer-secret-123', ['bearer-secret-123']],
+      ['escaped json authorization', '\\"Authorization\\": \\"Bearer json-bearer-456\\"', ['json-bearer-456']],
+      ['sk-ant token', 'sk-ant-api03-secretkey999', ['secretkey999']],
+      ['ya29 token', 'ya29.a0AfH6secret999', ['secret999']],
+      ['ghp token', 'ghp_1234secret999', ['secret999']],
+      ['github_pat token', 'github_pat_1234secret999', ['secret999']],
+      ['glpat token', 'glpat-1234secret999', ['secret999']],
+      ['jwt token', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2VjcmV0c2lnbmF0dXJl', ['c2VjcmV0c2lnbmF0dXJl']],
+      ['cli --api-key', '--api-key=cli-secret-777', ['cli-secret-777']],
+      ['url basic auth', 'https://admin:url-pass-888@example.com/v1', ['url-pass-888']],
+      ['single-line pem', '-----BEGIN PRIVATE KEY-----MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgw-----END PRIVATE KEY-----', ['MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgw']],
+      [
+        'unterminated multiline pem preserves post-pem diagnostic',
+        '-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0123456789abcdef\nNormal diagnostic after pem',
+        ['MIIEpAIBAAKCAQEA0123456789abcdef'],
+        'Normal diagnostic after pem',
+      ],
+    ];
+
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.CLAUDE_PROGRESS_FD;
+
+    for (const [label, payload, secrets, preserve] of corpus) {
+      // 1. REDACT_SED
+      const sedOut = execSync(REDACT_SED, { input: payload + '\n', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+      assert.ok(sedOut.includes('[REDACTED'), `REDACT_SED [${label}] must emit [REDACTED*; got: ${sedOut}`);
+      for (const s of secrets) assert.ok(!sedOut.includes(s), `REDACT_SED [${label}] leaked ${s}`);
+      if (preserve) assert.ok(sedOut.includes(preserve), `REDACT_SED [${label}] must preserve "${preserve}"; got: ${sedOut}`);
+
+      // 2. stream-format.js tool_use Bash.command
+      const toolJson = JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: payload } }] },
+      }) + '\n';
+      const toolRun = spawnSync('node', [FORMATTER_PATH], { input: toolJson, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+      assert.equal(toolRun.status, 0, `stream-format tool_use [${label}] exited ${toolRun.status}`);
+      assert.ok(toolRun.stdout.includes('[REDACTED'), `stream-format tool_use [${label}] must emit [REDACTED*; got: ${toolRun.stdout}`);
+      for (const s of secrets) assert.ok(!toolRun.stdout.includes(s), `stream-format tool_use [${label}] leaked ${s}`);
+      if (preserve) assert.ok(toolRun.stdout.includes(preserve), `stream-format tool_use [${label}] must preserve "${preserve}"; got: ${toolRun.stdout}`);
+
+      // 3. stream-format.js non-JSON passthrough stdin
+      const passRun = spawnSync('node', [FORMATTER_PATH], { input: payload + '\n', env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+      assert.equal(passRun.status, 0, `stream-format passthrough [${label}] exited ${passRun.status}`);
+      assert.ok(passRun.stdout.includes('[REDACTED'), `stream-format passthrough [${label}] must emit [REDACTED*; got: ${passRun.stdout}`);
+      for (const s of secrets) assert.ok(!passRun.stdout.includes(s), `stream-format passthrough [${label}] leaked ${s}`);
+      if (preserve) assert.ok(passRun.stdout.includes(preserve), `stream-format passthrough [${label}] must preserve "${preserve}"; got: ${passRun.stdout}`);
+    }
+
+    // L-2: object-shaped result (is_error: true) serialized without [object Object] and redacted
+    const l2Input = JSON.stringify({ type: 'result', is_error: true, result: { code: 400, auth: 'Bearer obj-secret-1' } }) + '\n';
+    const l2Run = spawnSync('node', [FORMATTER_PATH], { input: l2Input, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+    assert.equal(l2Run.status, 0, `L-2 exited ${l2Run.status}`);
+    assert.ok(!l2Run.stdout.includes('[object Object]'), `L-2 must not emit [object Object]; got: ${l2Run.stdout}`);
+    assert.ok(!l2Run.stdout.includes('obj-secret-1'), 'L-2 must redact secret inside object result');
+    assert.ok(l2Run.stdout.includes('400'), 'L-2 must serialize JSON payload');
+
+    // L-3: assistant text without trailing \n followed by non-JSON passthrough line
+    const l3Input = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'no-trailing-nl' }] } }) + '\nraw-line\n';
+    const l3Run = spawnSync('node', [FORMATTER_PATH], { input: l3Input, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+    assert.equal(l3Run.status, 0, `L-3 exited ${l3Run.status}`);
+    assert.ok(l3Run.stdout.includes('no-trailing-nl\nraw-line\n'), `L-3 must insert newline before passthrough line; got: ${JSON.stringify(l3Run.stdout)}`);
+
+    // L-4: CLAUDE_PROGRESS_FD=1 emits ⚡ and Turn1 separated by \n on stdout
+    const l4Input = [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'sonnet', session_id: 's-l4' }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Turn1' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/tmp/a' } }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Turn2' }] } }),
+    ].join('\n') + '\n';
+    const l4Run = spawnSync('node', [FORMATTER_PATH], {
+      input: l4Input,
+      env: { ...cleanEnv, CLAUDE_PROGRESS_FD: '1' },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.equal(l4Run.status, 0, `L-4 exited ${l4Run.status}`);
+    assert.ok(l4Run.stdout.includes('⚡') && l4Run.stdout.includes('\nTurn1'), `L-4 must separate ⚡ and Turn1 with newline; got: ${JSON.stringify(l4Run.stdout)}`);
+    assert.ok(l4Run.stdout.includes('Turn1\n') && l4Run.stdout.includes('Turn2'), `L-4 must separate Turn1 and tool_use/Turn2 with newline; got: ${JSON.stringify(l4Run.stdout)}`);
   });
 });

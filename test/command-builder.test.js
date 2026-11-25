@@ -200,13 +200,48 @@ describe('buildCommand - command construction', () => {
     assert.ok(!parsed.command.match(/^cd /m));
   });
 
-  it('T-6: non-failover command wraps REDACT_SED in resilient pipe fallback { ${REDACT_SED} || cat; } >&2 (C8-6)', () => {
+  it('T-6: non-failover command wraps REDACT_SED in fail-closed drain without || cat fallback (M-2)', () => {
     const result = buildCommand({ prompt: 'test pipe fallback' });
     const parsed = JSON.parse(result.content[0].text);
     assert.ok(
-      parsed.command.includes('{ sed -E -u ') && parsed.command.includes('|| cat; } >&2'),
-      'Non-failover command must route stderr through { REDACT_SED || cat; } >&2'
+      parsed.command.includes('{ sed -E -u ') &&
+      parsed.command.includes("|| { cat >/dev/null; printf '[claude-mcp] redaction unavailable\\n'; }; } >&2"),
+      'Non-failover command must route stderr through fail-closed drain'
     );
+    assert.ok(!parsed.command.includes('|| cat; }'), 'Non-failover command must not fall back to raw cat on sed failure');
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-t6-sed-'));
+    try {
+      const brokenSedDir = path.join(tmpDir, 'broken-sed');
+      fs.mkdirSync(brokenSedDir, { recursive: true });
+      fs.writeFileSync(path.join(brokenSedDir, 'sed'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+
+      const errPayload = 'Authorization: Bearer leak-single-sed\n'.repeat(3000);
+      const errFile = path.join(tmpDir, 'large.err');
+      fs.writeFileSync(errFile, errPayload);
+
+      const mockBin = path.join(tmpDir, 'mock-claude.sh');
+      fs.writeFileSync(
+        mockBin,
+        `#!/bin/bash\ncat "${errFile}" >&2\nprintf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"SINGLE_TIER_OK\\n"}]}}'\nexit 0\n`,
+        { mode: 0o755 }
+      );
+
+      const runCmd = JSON.parse(buildCommand({ prompt: 'test single-tier broken sed' }, { CLAUDE_BIN: mockBin }).content[0].text).command;
+      const run = spawnSync('bash', {
+        input: runCmd,
+        env: { ...process.env, PATH: `${brokenSedDir}:${process.env.PATH}` },
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+
+      assert.equal(run.status, 0, `Expected exit 0 (no SIGPIPE 141), got ${run.status}; stderr=${run.stderr.slice(0, 200)}`);
+      assert.ok(run.stdout.includes('SINGLE_TIER_OK'), 'stdout must include SINGLE_TIER_OK');
+      assert.ok(run.stderr.includes('redaction unavailable'), 'stderr must report redaction unavailable');
+      assert.ok(!run.stderr.includes('leak-single-sed'), 'stderr must not leak raw Bearer secret when sed fails');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -841,6 +876,9 @@ describe('Streaming Progress, Headless Isolation & Fitness Gates (T-S2, T-S4, T-
     assert.ok(promptTool, 'claude_prompt tool must be registered');
     assert.equal(promptTool.inputSchema?.properties?.enableHooks?.type, 'boolean', 'enableHooks schema type must be boolean');
     assert.equal(promptTool.inputSchema?.properties?.enableMcp?.type, 'boolean', 'enableMcp schema type must be boolean');
+    assert.match(promptTool.description || '', /stdout/i, 'claude_prompt description must mention stdout progress/session placement');
+    assert.match(promptTool.description || '', /stderr/i, 'claude_prompt description must mention stderr progress/session placement');
+    assert.match(promptTool.description || '', /session/i, 'claude_prompt description must mention session');
   });
 
   it('T-S8: line-budget fitness (<=100 lines), node --check, bash -n, and tracked-file path hygiene', () => {

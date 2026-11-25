@@ -44,6 +44,7 @@ server.tool(
     'INSTRUCTION: Call claude_models first to discover supported models before calling this tool.',
     'Supports EnMaaS AI Gateway (free GLM 5.3) and GCP Vertex AI (canonical sonnet, opus, claude-sonnet-5, claude-opus-4-8) with shared-quota bypass and tertiary fallback.',
     'Returns JSON { command, cwd, description, block_until_ms } for agent shell execution.',
+    'Progress and session header (⚡ model | session) stream on stdout in single-tier mode and on stderr during failover so stdout holds clean assistant text; drain stderr concurrently.',
   ].join(' '),
   {
     prompt: z.string().describe('The prompt to send to Claude'),

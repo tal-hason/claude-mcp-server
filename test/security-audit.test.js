@@ -669,6 +669,16 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
         stdio: 'ignore',
       });
 
+      const isPidAlive = (pid) => {
+        try {
+          const s = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+          const st = s.slice(s.lastIndexOf(')') + 2, s.lastIndexOf(')') + 3);
+          return st !== 'Z' && st !== 'X';
+        } catch {
+          return false;
+        }
+      };
+
       const start = Date.now();
       while (!fs.existsSync(sentinelPid) && Date.now() - start < 5000) {
         await new Promise((r) => setTimeout(r, 20));
@@ -676,7 +686,7 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
       assert.ok(fs.existsSync(sentinelPid), 'Mock child PID sentinel must be created');
       const childPid = fs.readFileSync(sentinelPid, 'utf8').trim();
       assert.ok(childPid.length > 0, 'Child PID must be non-empty');
-      assert.ok(fs.existsSync(`/proc/${childPid}`), 'Child process must be running before SIGTERM');
+      assert.ok(isPidAlive(childPid), 'Child process must be running before SIGTERM');
 
       child.kill('SIGTERM');
 
@@ -687,11 +697,11 @@ describe('Farley ATDD T-8: Signal Trap Disarm and Process Group Protection (fail
       assert.equal(exitCode, 143, `Expected exit code 143 on SIGTERM, got: ${exitCode}`);
 
       const killStart = Date.now();
-      while (fs.existsSync(`/proc/${childPid}`) && Date.now() - killStart < 1000) {
+      while (isPidAlive(childPid) && Date.now() - killStart < 1000) {
         await new Promise((r) => setTimeout(r, 50));
       }
 
-      const childStillAlive = fs.existsSync(`/proc/${childPid}`);
+      const childStillAlive = isPidAlive(childPid);
       if (childStillAlive) {
         try { process.kill(parseInt(childPid, 10), 'SIGKILL'); } catch {}
       }
