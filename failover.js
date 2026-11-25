@@ -1,5 +1,5 @@
 // claude-mcp-server/failover.js
-// @ai-rules: [Pattern]: Failover controller for intra-Vertex, cross-provider, and cascade. [Constraint]: Pure logic, <= 100 lines.
+// @ai-rules: [Pattern]: Failover controller; closes claude FD 3 (3>&-) & routes live progress via CLAUDE_PROGRESS_FD=3. [Constraint]: Pure logic, <= 100 lines.
 
 import { resolveGcpProjects, resolveProvider, normalizeVertexModel } from './providers.js';
 import { quote, _buildDualSubshellScript, _buildCascadeScript } from './failover-scripts.js';
@@ -61,8 +61,8 @@ export function buildVertexFailoverScript({
     `     unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ENMAAS_KEY ENMAAS_BASE_URL CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY; }`;
   return _buildDualSubshellScript({
     markerName, preamble, delim, prompt, sysPrompt,
-    runPrimary: `_run_claude ${p1} ${c1}\n     ${envPrefix}${a1} < "$_pfile" | node ${fmt}`,
-    runSecondary: `_run_claude ${p2} ${c2}\n     ${envPrefix}${a2} < "$_pfile" | node ${fmt}`,
+    runPrimary: `_run_claude ${p1} ${c1}\n     ${envPrefix}${a1} < "$_pfile" 3>&- | CLAUDE_PROGRESS_FD=3 node ${fmt}`,
+    runSecondary: `_run_claude ${p2} ${c2}\n     ${envPrefix}${a2} < "$_pfile" 3>&- | CLAUDE_PROGRESS_FD=3 node ${fmt}`,
   });
 }
 
@@ -71,10 +71,10 @@ export function buildCrossProviderFailoverScript({
 }) {
   const p2 = quote(secondaryProject || ''), c2 = secondaryCredentials ? quote(secondaryCredentials) : null, mSlug = model ? `_${slug(model)}` : '';
   const markerName = `failover_enmaas_${slug(secondaryProject || 'vertex')}${mSlug}`;
-  const runPrimary = `${envPrefix}${primaryArgs.join(' ')} < "$_pfile" | node ${fmt}`;
+  const runPrimary = `${envPrefix}${primaryArgs.join(' ')} < "$_pfile" 3>&- | CLAUDE_PROGRESS_FD=3 node ${fmt}`;
   const secExports = 'unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ENMAAS_KEY ENMAAS_BASE_URL CLAUDE_CODE_ENVIRONMENT_KIND CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\n' +
     `     export CLAUDE_CODE_USE_VERTEX=1 ANTHROPIC_VERTEX_PROJECT_ID=${p2} CLOUDSDK_CORE_PROJECT=${p2}${c2 ? ` GOOGLE_APPLICATION_CREDENTIALS=${c2}` : '; unset GOOGLE_APPLICATION_CREDENTIALS'}`;
-  const runSecondary = `${secExports}\n     ${secondaryArgs.join(' ')} < "$_pfile" | node ${fmt}`;
+  const runSecondary = `${secExports}\n     ${secondaryArgs.join(' ')} < "$_pfile" 3>&- | CLAUDE_PROGRESS_FD=3 node ${fmt}`;
   return _buildDualSubshellScript({ markerName, runPrimary, runSecondary, delim, prompt, sysPrompt });
 }
 
@@ -84,9 +84,9 @@ export function buildCascadeScript(opts) {
   const p1Id = slug(type === 'cross-provider' ? 'enmaas' : (p1 || 'p1')), p2Id = slug(p2 || 't2'), p3Id = slug(p3 || 't3');
   return _buildCascadeScript({
     markerName: `cascade_${p1Id}_${p2Id}_${p3Id}${mSlug}`, isCrossProvider: type === 'cross-provider', delim, prompt, sysPrompt,
-    runPrimary: `${envPrefix}${primaryArgs.join(' ')} < "$_pfile" | node ${fmt}`,
-    runSecondary: `${secondaryArgs.join(' ')} < "$_pfile" | node ${fmt}`,
-    runTertiary: `${(tertiaryArgs || secondaryArgs).join(' ')} < "$_pfile" | node ${fmt}`,
+    runPrimary: `${envPrefix}${primaryArgs.join(' ')} < "$_pfile" 3>&- | CLAUDE_PROGRESS_FD=3 node ${fmt}`,
+    runSecondary: `${secondaryArgs.join(' ')} < "$_pfile" 3>&- | CLAUDE_PROGRESS_FD=3 node ${fmt}`,
+    runTertiary: `${(tertiaryArgs || secondaryArgs).join(' ')} < "$_pfile" 3>&- | CLAUDE_PROGRESS_FD=3 node ${fmt}`,
     tier1Project: p1, tier1Credentials: opts.primaryCredentials, tier2Project: p2, tier2Credentials: opts.secondaryCredentials, tier3Project: p3, tier3Credentials: opts.tertiaryCredentials,
   });
 }
