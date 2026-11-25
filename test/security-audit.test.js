@@ -1068,7 +1068,7 @@ exit 0
 describe('Security Audit Pass 6 Remediation: Stderr Redaction Hardening (C7-7..C7-10 / T-P6-7, T-P6-9)', () => {
   it('redacts multi-line PEM blocks without swallowing subsequent lines (C7-7)', () => {
     assert.ok(!REDACT_SED.includes('/c\\\\'), 'REDACT_SED must not use non-portable c\\ sed command');
-    assert.ok(REDACT_SED.includes('/^[A-Za-z0-9+\\/=]{16,}/d'), 'REDACT_SED must use non-swallowing base64 deletion pattern');
+    assert.ok(REDACT_SED.includes('/^[[:space:]]*[A-Za-z0-9+\\/=]+[[:space:]]*$/d'), 'REDACT_SED must use non-swallowing base64 deletion pattern');
 
     const input = 'Header info\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----\nImportant trailing log line\n';
     const out = execSync(`${REDACT_SED}`, { input, encoding: 'utf8' });

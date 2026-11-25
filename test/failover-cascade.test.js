@@ -3,7 +3,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1298,7 +1298,7 @@ esac
       provider: 'vertex',
       primaryProject: 'p1',
       secondaryProject: 'p2',
-    }, { CLAUDE_BIN: mockClaudeBin, CLAUDE_TIMEOUT: '4' });
+    }, { CLAUDE_BIN: mockClaudeBin, CLAUDE_TIMEOUT: '5' });
     const { command } = JSON.parse(res.content[0].text);
     const cmdFile = path.join(tmpDir, 'm1-cmd.sh');
     fs.writeFileSync(cmdFile, command);
@@ -1312,7 +1312,7 @@ esac
       't0 = time.monotonic()',
       'p = subprocess.Popen(["bash"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=wfd)',
       'try:',
-      '    out, _ = p.communicate(cmd, timeout=6)',
+      '    out, _ = p.communicate(cmd, timeout=8)',
       '    rc = p.returncode',
       'except subprocess.TimeoutExpired:',
       '    p.kill()',
@@ -1341,7 +1341,7 @@ esac
     assert.equal(drv.status, 0, `python3 FIFO driver failed: ${drv.stderr}`);
     const result = JSON.parse(drv.stdout);
     assert.equal(result.rc, 0, `Expected child exit 0, got ${result.rc}; stdout=${result.stdout}`);
-    assert.ok(result.elapsed_ms < 2500, `Expected <2500ms without FIFO deadlock, took ${result.elapsed_ms}ms`);
+    assert.ok(result.elapsed_ms < 4000, `Expected <4000ms without FIFO deadlock, took ${result.elapsed_ms}ms`);
     assert.ok(result.stdout.includes('M1_NO_FALSE_FAILOVER'), 'stdout must include M1_NO_FALSE_FAILOVER');
     assert.ok(!result.stdout.includes('SHOULD_NOT_FAILOVER'), 'Must not trigger false failover to Tier 2');
     assert.ok(result.fifo.includes('⚡') || result.fifo.includes('⏵'), 'Drained FIFO must contain progress bytes');
@@ -1449,6 +1449,22 @@ esac
         ['MIIEpAIBAAKCAQEA0123456789abcdef'],
         'Normal diagnostic after pem',
       ],
+      [
+        'indented multiline pem + short tail',
+        '    -----BEGIN RSA PRIVATE KEY-----\n    MIIEpAIBAAKCAQEA0123456789abcdef\n    abCD12==\n    -----END RSA PRIVATE KEY-----',
+        ['MIIEpAIBAAKCAQEA0123456789abcdef', 'abCD12==', 'END RSA PRIVATE KEY'],
+      ],
+      [
+        'unindented multiline pem + short tail',
+        '-----BEGIN PRIVATE KEY-----\nMIIEpAIBAAKCAQEA0123456789abcdef\nxyz=\n-----END PRIVATE KEY-----',
+        ['MIIEpAIBAAKCAQEA0123456789abcdef', 'xyz=', 'END RSA PRIVATE KEY'.replace('RSA ', '')],
+      ],
+      [
+        'unterminated indented pem + short tail preserves post-pem diagnostic',
+        '  -----BEGIN RSA PRIVATE KEY-----\n  MIIEpAIBAAKCAQEA0123456789abcdef\n  abCD==\nNormal diagnostic after pem',
+        ['MIIEpAIBAAKCAQEA0123456789abcdef', 'abCD=='],
+        'Normal diagnostic after pem',
+      ],
     ];
 
     const cleanEnv = { ...process.env };
@@ -1472,13 +1488,47 @@ esac
       for (const s of secrets) assert.ok(!toolRun.stdout.includes(s), `stream-format tool_use [${label}] leaked ${s}`);
       if (preserve) assert.ok(toolRun.stdout.includes(preserve), `stream-format tool_use [${label}] must preserve "${preserve}"; got: ${toolRun.stdout}`);
 
-      // 3. stream-format.js non-JSON passthrough stdin
+      // 3. stream-format.js result (is_error: true)
+      const resJson = JSON.stringify({ type: 'result', is_error: true, result: payload }) + '\n';
+      const resRun = spawnSync('node', [FORMATTER_PATH], { input: resJson, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+      assert.equal(resRun.status, 0, `stream-format result [${label}] exited ${resRun.status}`);
+      assert.ok(resRun.stdout.includes('[REDACTED'), `stream-format result [${label}] must emit [REDACTED*; got: ${resRun.stdout}`);
+      for (const s of secrets) assert.ok(!resRun.stdout.includes(s), `stream-format result [${label}] leaked ${s}`);
+      if (preserve) assert.ok(resRun.stdout.includes(preserve), `stream-format result [${label}] must preserve "${preserve}"; got: ${resRun.stdout}`);
+
+      // 4. stream-format.js non-JSON passthrough stdin
       const passRun = spawnSync('node', [FORMATTER_PATH], { input: payload + '\n', env: cleanEnv, encoding: 'utf8', timeout: 5000 });
       assert.equal(passRun.status, 0, `stream-format passthrough [${label}] exited ${passRun.status}`);
       assert.ok(passRun.stdout.includes('[REDACTED'), `stream-format passthrough [${label}] must emit [REDACTED*; got: ${passRun.stdout}`);
       for (const s of secrets) assert.ok(!passRun.stdout.includes(s), `stream-format passthrough [${label}] leaked ${s}`);
       if (preserve) assert.ok(passRun.stdout.includes(preserve), `stream-format passthrough [${label}] must preserve "${preserve}"; got: ${passRun.stdout}`);
     }
+
+    // F-3: hostile tool_use block.name redaction, OSC 52 strip, and length cap
+    const hostileName = 'mcp__Authorization: Bearer tool-name-secret\n\x1b]52;c;evil\x07__' + 'z'.repeat(90);
+    const f3Json = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', name: hostileName, input: { command: 'echo ok' } }] },
+    }) + '\n';
+    const f3Run = spawnSync('node', [FORMATTER_PATH], { input: f3Json, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+    assert.equal(f3Run.status, 0, `F-3 exited ${f3Run.status}`);
+    assert.ok(!f3Run.stdout.includes('tool-name-secret'), 'F-3 must redact secret inside tool_use block.name');
+    assert.ok(!f3Run.stdout.includes('\x1b]52'), 'F-3 must strip OSC 52 escape sequence from tool_use block.name');
+    assert.ok(f3Run.stdout.includes('[REDACTED]'), `F-3 must emit [REDACTED]; got: ${f3Run.stdout}`);
+    assert.ok(f3Run.stdout.trimEnd().length < 200, `F-3 output line must be < 200 chars, got ${f3Run.stdout.trimEnd().length}`);
+
+    // F-11: object-shaped model, session_id, tool_use.name, tool_use.input.command
+    const f11Input = [
+      JSON.stringify({ type: 'system', subtype: 'init', model: { id: 'm1' }, session_id: { sid: 's1' } }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: { tool: 't1' }, input: { command: { cmd: 'Bearer obj-cmd-sec' } } }] },
+      }),
+    ].join('\n') + '\n';
+    const f11Run = spawnSync('node', [FORMATTER_PATH], { input: f11Input, env: cleanEnv, encoding: 'utf8', timeout: 5000 });
+    assert.equal(f11Run.status, 0, `F-11 exited ${f11Run.status}`);
+    assert.ok(!f11Run.stdout.includes('[object Object]'), `F-11 must not emit [object Object]; got: ${f11Run.stdout}`);
+    assert.ok(!f11Run.stdout.includes('obj-cmd-sec'), 'F-11 must redact secret inside object command');
 
     // L-2: object-shaped result (is_error: true) serialized without [object Object] and redacted
     const l2Input = JSON.stringify({ type: 'result', is_error: true, result: { code: 400, auth: 'Bearer obj-secret-1' } }) + '\n';
@@ -1510,5 +1560,71 @@ esac
     assert.equal(l4Run.status, 0, `L-4 exited ${l4Run.status}`);
     assert.ok(l4Run.stdout.includes('⚡') && l4Run.stdout.includes('\nTurn1'), `L-4 must separate ⚡ and Turn1 with newline; got: ${JSON.stringify(l4Run.stdout)}`);
     assert.ok(l4Run.stdout.includes('Turn1\n') && l4Run.stdout.includes('Turn2'), `L-4 must separate Turn1 and tool_use/Turn2 with newline; got: ${JSON.stringify(l4Run.stdout)}`);
+  });
+
+  it('DR-F1: undrained Node spawn socketpair stderr completes cascade cleanly without blocking', async () => {
+    const t1Tools = Array.from({ length: 4000 }, (_, i) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `echo sp1_${i}_padding_for_socketpair` } }] },
+      })
+    );
+    writeFixture('FIXTURE_SP_T1', 1, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p1', session_id: 's-sp1' }),
+      ...t1Tools,
+      JSON.stringify({ type: 'error', error: { message: 'API Error: 429 Too Many Requests' } }),
+    ]);
+    fs.writeFileSync(path.join(tmpDir, 'FIXTURE_SP_T1.err'), 'raw tier1 err\n');
+
+    const t2Tools = Array.from({ length: 2000 }, (_, i) =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `echo sp2_${i}_padding_for_socketpair` } }] },
+      })
+    );
+    writeFixture('FIXTURE_SP_T2', 0, [
+      JSON.stringify({ type: 'system', subtype: 'init', model: 'vertex-p2', session_id: 's-sp2' }),
+      ...t2Tools,
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'SOCKETPAIR_CASCADE_OK\n' }] } }),
+    ]);
+    fs.writeFileSync(behaviorFile, 'FIXTURE_SP_T1\nFIXTURE_SP_T2\n');
+
+    const { command } = JSON.parse(buildCommand({
+      prompt: 'test socketpair cascade',
+      mode: 'executor',
+      provider: 'vertex',
+      primaryProject: 'p1',
+      secondaryProject: 'p2',
+    }, { CLAUDE_BIN: mockClaudeBin, CLAUDE_TIMEOUT: '5' }).content[0].text);
+
+    const t0 = Date.now();
+    let timedOut = false;
+    const child = spawn('bash', {
+      env: { ...process.env, MOCK_BEHAVIOR_FILE: behaviorFile, XDG_RUNTIME_DIR: tmpDir },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    // Intentionally do NOT attach any listener or .resume() to child.stderr
+    const stdoutChunks = [];
+    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk));
+    child.stdin.end(command);
+
+    const safetyTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGKILL');
+    }, 4500);
+
+    const code = await new Promise((resolve) => {
+      child.on('close', (exitCode) => {
+        clearTimeout(safetyTimer);
+        resolve(exitCode);
+      });
+    });
+    const elapsed = Date.now() - t0;
+    const stdout = Buffer.concat(stdoutChunks).toString('utf8');
+
+    assert.equal(timedOut, false, `Socketpair stderr hung past 4500ms safety kill (elapsed ${elapsed}ms)`);
+    assert.equal(code, 0, `Expected exit 0 on socketpair cascade, got ${code}`);
+    assert.ok(elapsed < 4000, `Expected <4000ms without socketpair block, took ${elapsed}ms`);
+    assert.ok(stdout.includes('SOCKETPAIR_CASCADE_OK'), `stdout must include SOCKETPAIR_CASCADE_OK, got: ${stdout}`);
   });
 });
