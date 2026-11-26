@@ -133,8 +133,20 @@ describe('ATDD Layer 1 & 2: 3-Tier Cascade Script Generation & Isolation (comman
     );
   });
 
-  it('passes resolvedModel into resolveFailoverConfig and normalizes legacy models across all tiers (Defect D / T-3)', () => {
-    const res = buildCommand({
+  it('passes resolvedModel into resolveFailoverConfig, preserves 5-5 models, and normalizes claude-opus-5 across all tiers (Defect D / T-3)', () => {
+    const resOpus5 = buildCommand({
+      prompt: 'review repo',
+      model: 'claude-opus-5',
+      provider: 'vertex',
+      primaryProject: 'vertex-project-1',
+      secondaryProject: 'vertex-project-2',
+      tertiaryProject: 'vertex-project-3',
+    });
+    const parsedOpus5 = JSON.parse(resOpus5.content[0].text);
+    assert.ok(!parsedOpus5.command.includes('claude-opus-5'), 'Legacy claude-opus-5 must not appear in any Vertex tier');
+    assert.ok(parsedOpus5.command.includes("--model 'opus'"), 'All Vertex tiers must normalize claude-opus-5 to canonical opus');
+
+    const resOpus55 = buildCommand({
       prompt: 'review repo',
       model: 'claude-opus-5-5',
       provider: 'vertex',
@@ -142,9 +154,19 @@ describe('ATDD Layer 1 & 2: 3-Tier Cascade Script Generation & Isolation (comman
       secondaryProject: 'vertex-project-2',
       tertiaryProject: 'vertex-project-3',
     });
-    const parsed = JSON.parse(res.content[0].text);
-    assert.ok(!parsed.command.includes('claude-opus-5-5'), 'Legacy claude-opus-5-5 must not appear in any Vertex tier');
-    assert.ok(parsed.command.includes("--model 'opus'"), 'All Vertex tiers must normalize claude-opus-5-5 to canonical opus');
+    const parsedOpus55 = JSON.parse(resOpus55.content[0].text);
+    assert.ok(parsedOpus55.command.includes("--model 'claude-opus-5-5'"), 'All Vertex tiers must preserve claude-opus-5-5');
+
+    const resSonnet55 = buildCommand({
+      prompt: 'review repo',
+      model: 'claude-sonnet-5-5',
+      provider: 'vertex',
+      primaryProject: 'vertex-project-1',
+      secondaryProject: 'vertex-project-2',
+      tertiaryProject: 'vertex-project-3',
+    });
+    const parsedSonnet55 = JSON.parse(resSonnet55.content[0].text);
+    assert.ok(parsedSonnet55.command.includes("--model 'claude-sonnet-5-5'"), 'All Vertex tiers must preserve claude-sonnet-5-5');
   });
 
   it('preserves backward compatibility when tertiary project is omitted (2-tier)', () => {

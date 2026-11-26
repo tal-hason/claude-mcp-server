@@ -36,8 +36,8 @@ export function resolveProvider(provider = 'auto', model = '', _env = process.en
 
 export function normalizeVertexModel(model) {
   if (!model || typeof model !== 'string') return model;
-  if (model === 'claude-opus-5-5' || model === 'claude-opus-5') return 'opus';
-  if (model === 'claude-sonnet-5-5' || model.startsWith('rits/') || model.includes('/')) return 'sonnet';
+  if (model === 'claude-opus-5') return 'opus';
+  if (model.startsWith('rits/') || model.includes('/')) return 'sonnet';
   return model;
 }
 

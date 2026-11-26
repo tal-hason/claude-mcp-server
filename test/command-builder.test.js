@@ -482,12 +482,12 @@ describe('providers.js - resolveProvider, normalizeVertexModel & buildVertexSett
     assert.equal(resolveProvider(undefined, undefined), 'vertex');
   });
 
-  it('T-3b: normalizeVertexModel maps legacy 5-5, opus-5, and rits/* IDs to canonical Vertex aliases', async () => {
+  it('T-3b: normalizeVertexModel preserves 5-5 models and maps opus-5 and rits/* IDs to canonical Vertex aliases', async () => {
     const { normalizeVertexModel } = await getProviders();
     assert.equal(typeof normalizeVertexModel, 'function', 'normalizeVertexModel must be exported from providers.js');
-    assert.equal(normalizeVertexModel('claude-opus-5-5'), 'opus');
+    assert.equal(normalizeVertexModel('claude-opus-5-5'), 'claude-opus-5-5');
+    assert.equal(normalizeVertexModel('claude-sonnet-5-5'), 'claude-sonnet-5-5');
     assert.equal(normalizeVertexModel('claude-opus-5'), 'opus');
-    assert.equal(normalizeVertexModel('claude-sonnet-5-5'), 'sonnet');
     assert.equal(normalizeVertexModel('rits/zai-org/glm-5-3'), 'sonnet');
     assert.equal(normalizeVertexModel('sonnet'), 'sonnet');
     assert.equal(normalizeVertexModel('opus'), 'opus');
@@ -989,14 +989,15 @@ describe('Cross-Provider Failover (EnMaaS -> Vertex) (T-24 to T-36)', () => {
     assert.equal(configFromEnv.secondaryCredentials, '/env/sa.json');
   });
 
-  it('T-26: resolveSecondaryModel maps rits/* or / models to canonical sonnet and normalizes legacy 5-5 models (T-3)', async () => {
+  it('T-26: resolveSecondaryModel maps rits/* or / models to canonical sonnet, preserves 5-5 models, and normalizes claude-opus-5 (T-3)', async () => {
     const { resolveSecondaryModel } = await getFailover();
     assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3'), 'sonnet');
     assert.equal(resolveSecondaryModel('some/model/path'), 'sonnet');
-    assert.equal(resolveSecondaryModel('claude-opus-5-5'), 'opus');
+    assert.equal(resolveSecondaryModel('claude-opus-5-5'), 'claude-opus-5-5');
+    assert.equal(resolveSecondaryModel('claude-sonnet-5-5'), 'claude-sonnet-5-5');
     assert.equal(resolveSecondaryModel('claude-opus-5'), 'opus');
-    assert.equal(resolveSecondaryModel('claude-sonnet-5-5'), 'sonnet');
-    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3', 'claude-opus-5-5'), 'opus');
+    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3', 'claude-opus-5-5'), 'claude-opus-5-5');
+    assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3', 'claude-opus-5'), 'opus');
     assert.equal(resolveSecondaryModel('rits/zai-org/glm-5-3', 'claude-3-5-sonnet'), 'claude-3-5-sonnet');
     assert.equal(resolveSecondaryModel('claude-3-5-sonnet-v20241022'), 'claude-3-5-sonnet-v20241022');
   });
