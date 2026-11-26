@@ -34,18 +34,18 @@ describe('ATDD Layer 1: Model Discovery & Capabilities (models.js)', () => {
     assert.equal(res.models.find((m) => m.id === 'claude-opus-5'), undefined, 'claude-opus-5 must not be injected when absent from EnMaaS');
   });
 
-  it('T-1b: VERTEX_MODELS contains canonical Vertex aliases and verified versioned IDs without fake 5-5 models', () => {
+  it('T-1b: VERTEX_MODELS contains canonical Vertex aliases, 5-5 models, and verified versioned IDs without claude-opus-5', () => {
     const ids = VERTEX_MODELS.map((m) => m.id);
     assert.deepEqual(ids, [
       'sonnet',
       'opus',
       'haiku',
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
       'claude-sonnet-5',
       'claude-opus-4-8',
       'claude-haiku-4-5@20251001',
     ]);
-    assert.ok(!ids.includes('claude-sonnet-5-5'), 'VERTEX_MODELS must not list nonexistent claude-sonnet-5-5');
-    assert.ok(!ids.includes('claude-opus-5-5'), 'VERTEX_MODELS must not list nonexistent claude-opus-5-5');
     assert.ok(!ids.includes('claude-opus-5'), 'VERTEX_MODELS must not list nonexistent claude-opus-5');
   });
 });
@@ -98,15 +98,19 @@ describe('ATDD Layer 1 & 2: Command Builder Work-Weighting & Caller Override (co
     }
   });
 
-  it('T-3: normalizes legacy claude-opus-5-5, claude-opus-5, and claude-sonnet-5-5 to canonical Vertex aliases', () => {
+  it('T-3: preserves claude-opus-5-5 and claude-sonnet-5-5 on Vertex while normalizing claude-opus-5 to opus', () => {
     const resOpus55 = buildCommand({ prompt: 'review', model: 'claude-opus-5-5', provider: 'vertex' });
-    assert.ok(JSON.parse(resOpus55.content[0].text).command.includes("--model 'opus'"), 'claude-opus-5-5 must normalize to opus on Vertex');
-
-    const resOpus5 = buildCommand({ prompt: 'review', model: 'claude-opus-5', provider: 'vertex' });
-    assert.ok(JSON.parse(resOpus5.content[0].text).command.includes("--model 'opus'"), 'claude-opus-5 must normalize to opus on Vertex');
+    const cmdOpus55 = JSON.parse(resOpus55.content[0].text).command;
+    assert.ok(cmdOpus55.includes("--model 'claude-opus-5-5'"), 'claude-opus-5-5 must be preserved on Vertex');
 
     const resSonnet55 = buildCommand({ prompt: 'plan', model: 'claude-sonnet-5-5', provider: 'vertex' });
-    assert.ok(JSON.parse(resSonnet55.content[0].text).command.includes("--model 'sonnet'"), 'claude-sonnet-5-5 must normalize to sonnet on Vertex');
+    const cmdSonnet55 = JSON.parse(resSonnet55.content[0].text).command;
+    assert.ok(cmdSonnet55.includes("--model 'claude-sonnet-5-5'"), 'claude-sonnet-5-5 must be preserved on Vertex');
+
+    const resOpus5 = buildCommand({ prompt: 'review', model: 'claude-opus-5', provider: 'vertex' });
+    const cmdOpus5 = JSON.parse(resOpus5.content[0].text).command;
+    assert.ok(!cmdOpus5.includes('claude-opus-5'), 'claude-opus-5 must not appear on Vertex');
+    assert.ok(cmdOpus5.includes("--model 'opus'"), 'claude-opus-5 must normalize to opus on Vertex');
   });
 
   it('caller explicit params.model override takes precedence over mode default', () => {

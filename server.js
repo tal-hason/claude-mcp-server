@@ -25,7 +25,8 @@ server.tool(
   [
     'List available models for EnMaaS AI Gateway and GCP Vertex AI projects with cost and tier tags.',
     'INSTRUCTION: Call this tool FIRST to inspect supported models before generating a command with claude_prompt.',
-    'Returns real-time models for EnMaaS (free GLM 5.3) and supported canonical Claude models (sonnet, opus, haiku, claude-sonnet-5, claude-opus-4-8) per Vertex AI project.',
+    'Returns real-time models for EnMaaS (free GLM 5.3) and supported Claude models',
+    '(sonnet, opus, haiku, claude-sonnet-5-5, claude-opus-5-5, claude-sonnet-5, claude-opus-4-8) per Vertex project.',
   ].join(' '),
   {
     provider: z.enum(['auto', 'enmaas', 'vertex', 'all']).nullish().default('all').describe('Provider filter: "enmaas", "vertex", or "all" (default).'),
@@ -42,7 +43,7 @@ server.tool(
   [
     'Build a Claude CLI command with intelligent work-to-model mode defaults, gateway routing, and 3-tier failover cascade.',
     'INSTRUCTION: Call claude_models first to discover supported models before calling this tool.',
-    'Supports EnMaaS AI Gateway (free GLM 5.3) and GCP Vertex AI (canonical sonnet, opus, claude-sonnet-5, claude-opus-4-8) with shared-quota bypass and tertiary fallback.',
+    'Supports EnMaaS AI Gateway (free GLM 5.3) and GCP Vertex AI (sonnet, opus, haiku, claude-sonnet-5-5, claude-opus-5-5, claude-sonnet-5, claude-opus-4-8) with shared-quota bypass.',
     'Returns JSON { command, cwd, description, block_until_ms } for agent shell execution.',
     'Progress and session header (⚡ model | session) stream on stdout in single-tier mode and on stderr during failover',
     '(leaving stdout to banners, assistant text, and errors); drain stderr concurrently.',
@@ -50,7 +51,7 @@ server.tool(
   {
     prompt: z.string().describe('The prompt to send to Claude'),
     mode: z.enum(MODE_NAMES).optional().describe('Dispatch mode: architect, planner, reviewer, explorer, executor.'),
-    model: z.string().optional().describe('Exact model name (e.g. sonnet, opus, rits/zai-org/glm-5-3, claude-sonnet-5, claude-opus-4-8). Overrides mode default.'),
+    model: z.string().optional().describe('Exact model name (e.g. sonnet, opus, rits/zai-org/glm-5-3, claude-sonnet-5-5, claude-opus-5-5, claude-sonnet-5, claude-opus-4-8).'),
     secondaryModel: z.string().optional().describe('Fallback model name for cross-provider failover (defaults to sonnet).'),
     tertiaryModel: z.string().optional().describe('Fallback model name for tertiary failover (defaults to sonnet).'),
     effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional().describe('Reasoning effort level.'),

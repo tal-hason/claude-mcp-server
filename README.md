@@ -71,7 +71,7 @@ Parameters:
 - `provider`: `"all"` (default), `"enmaas"`, or `"vertex"`
 - `project`: Optional GCP project ID to query specific Vertex AI quotas/models. Auto-detects from `VERTEX_PROJECT_ID`, `ANTHROPIC_VERTEX_PROJECT_ID`, or `CLOUDSDK_CORE_PROJECT` environment variables if omitted; explicit `project` parameter takes precedence.
 
-Returns real-time models for EnMaaS (e.g. `rits/zai-org/glm-5-3`, `rits/deepseek-ai/DeepSeek-V4.1-Flash-1017`) and supported Claude aliases (`sonnet`, `opus`, `haiku`) per Vertex AI project.
+Returns real-time models for EnMaaS (e.g. `rits/zai-org/glm-5-3`, `rits/deepseek-ai/DeepSeek-V4.1-Flash-1017`) and supported Claude models (`sonnet`, `opus`, `haiku`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `claude-haiku-4-5@20251001`) per Vertex AI project.
 
 ### Quick exploration
 
@@ -126,7 +126,7 @@ Built-in multi-tier failover ensures uninterrupted execution across cloud and ga
 |---|---|---|
 | `prompt` | Yes | The prompt to send (combined prompt + systemPrompt <= 100KB) |
 | `mode` | No | Dispatch mode (see table above) |
-| `model` | No | Exact model name (e.g. `sonnet`, `opus`, `claude-sonnet-5`, `claude-opus-4-8`, `rits/zai-org/glm-5-3`) |
+| `model` | No | Exact model name (e.g. `sonnet`, `opus`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-opus-4-8`, `rits/zai-org/glm-5-3`) |
 | `secondaryModel` | No | Fallback model name for cross-provider failover (defaults to `sonnet`) |
 | `tertiaryModel` | No | Tertiary model name for 3-tier cascade fallback (defaults to `sonnet`) |
 | `effort` | No | `low` / `medium` / `high` / `xhigh` / `max` |
